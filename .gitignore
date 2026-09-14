@@ -1,0 +1,23 @@
+# PlatformIO and Python
+.pio/
+.venv/
+__pycache__/
+
+# Secrets. Copy include/secrets.h.example to include/secrets.h and fill it in.
+include/secrets.h
+
+# Book conversion outputs, LittleFS image, book sources (copyrighted text, bulk binaries)
+build_*/
+data/
+books_src/
+
+# Game ROMs, the pokered checkout and the built asset pack: never in the repo
+stub_games/
+third_party/
+build_pack/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+*.swp

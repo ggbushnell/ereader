@@ -1,0 +1,19 @@
+# Partition table for the 8 MB ESP32-S3 module this reader is built on (N8R2,
+# confirmed by esptool flash_id on 2026-09-01), with the filesystem taking the
+# whole of flash above the app: 0x800000 - 0x210000 = 0x5F0000, about 6.1 MB.
+# It was 0x1F0000 while the table assumed a 4 MB module, which put three books
+# over budget. Single app slot: there is no OTA in this firmware, so the
+# second app image the stock tables reserve is pure waste here.
+#
+# The filesystem entry is named "spiffs" because that is the name PlatformIO
+# and the Arduino core look for when locating the filesystem image; the image
+# itself is LittleFS (board_build.filesystem = littlefs).
+#
+# Larger modules: leave the first three rows alone and extend spiffs to the end
+# of flash, for example Size 0x5F0000 on 8 MB or 0xDF0000 on 16 MB.
+#
+# Name,   Type, SubType, Offset,   Size,      Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  factory, 0x10000,  0x200000,
+spiffs,   data, spiffs,  0x210000, 0x5F0000,

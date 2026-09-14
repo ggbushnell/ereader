@@ -1,0 +1,6 @@
+# Host side converter dependencies for tools/pdf2book.py.
+# pypdf is the preferred extraction backend and the one used on this machine.
+pypdf>=4.0
+
+# Optional fallback. pdf2book.py uses it only if pypdf is missing.
+# pdfminer.six>=20221105

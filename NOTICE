@@ -1,0 +1,22 @@
+ereader
+Copyright 2026 Loggr LLC
+
+This product includes software developed by Loggr LLC and contributors.
+
+Licensing
+---------
+Firmware, tools, the browser page and everything else not listed below:
+  Apache License, Version 2.0 (see LICENSE)
+Documentation under docs/, README.md and SPEC.md:
+  Creative Commons Attribution 4.0 International (see docs/LICENSE)
+Case drawings (case_*.svg, ereader_case_v2.svg):
+  Creative Commons Attribution 4.0 International (see docs/LICENSE)
+
+Trademarks
+----------
+The name "Muon Sortes" is a trademark of Loggr LLC. The licenses above cover
+the code, drawings and documentation; they do not grant any right to use that
+mark or to imply the project is made or endorsed by Loggr LLC. "Based on
+AllanBinder/ereader" with a link to the source is welcome.
+
+Third-party components keep their own licenses; see THIRD_PARTY.md.

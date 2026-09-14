@@ -1,0 +1,997 @@
+#include <Adafruit_BME280.h>
+#include <Arduino.h>
+#include <LittleFS.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
+
+#include "books.h"
+#include "config.h"
+#include "games.h"
+#include "input.h"
+#include "news_sync.h"
+#include "numbers_view.h"
+#include "pins.h"
+#include "ui.h"
+#include "wifi_check.h"
+#include "wifi_setup.h"
+#include "wifi_store.h"
+
+namespace {
+
+// How long the boot sync waits for the reader to claim the device before it
+// starts. Lives here rather than in config.h so the guard is one file.
+const uint32_t AUTO_SYNC_GRACE_MS = 8000;
+
+// NVS key (namespace NVS_NS_NEWS, "news") holding the "a boot sync is running
+// right now" flag. Keys are capped at 15 characters.
+const char *NVS_KEY_BOOT_SYNC = "bootsync";
+
+enum class AppState { READING, MENU, JUMP, EMPTY, NUMBERS };
+
+AppState state = AppState::EMPTY;
+
+Book book;
+// Reused across page turns so the raster vector keeps its capacity instead of
+// reallocating up to 45 KB on every image page.
+PageData pageData;
+std::vector<BookEntry> library;
+uint32_t currentPage = 0;
+
+int menuCursor = 0;
+uint32_t jumpTarget = 1;
+
+// Daily numbers view. The data is loaded from /numbers.json every time the
+// view is opened (it is a few KB) and dropped when it is left. The screen
+// index is kept across visits so reopening lands where the reader left off.
+numbers_view::Data numbersData;
+bool numbersLoaded = false;
+int numbersScreen = 0;
+int numbersWindow = 0;  // time window index into numbersData.windows; == windows.size() is the chart window
+int numbersChart = 0;   // metric index in the chart window
+
+Adafruit_BME280 bme;
+bool bmeOk = false;
+
+// Lifetime count of watchdog-caused reboots, persisted to /wdt.cnt. Shown in
+// the menu header when nonzero so crash frequency is visible without serial.
+uint32_t wdtRebootCount = 0;
+
+void logf(const char *fmt, ...) {
+  char buf[160];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  Serial.print(buf);
+}
+
+// Arms the ESP32 task watchdog on the Arduino loop task. The core already
+// starts a TWDT during boot, so this reconfigures it to our timeout rather
+// than trying to create a second one. panic = true so a hang reboots instead
+// of only logging.
+void wdtBegin() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms = WDT_TIMEOUT_MS;
+  cfg.idle_core_mask = 0;
+  cfg.trigger_panic = true;
+  if (esp_task_wdt_reconfigure(&cfg) != ESP_OK) esp_task_wdt_init(&cfg);
+#else
+  esp_task_wdt_init(WDT_TIMEOUT_MS / 1000, true);
+#endif
+  esp_task_wdt_add(nullptr);
+}
+
+// True when the previous boot ended in a watchdog reset. ESP_RST_TASK_WDT is
+// the task watchdog; ESP_RST_WDT covers the interrupt and RTC watchdogs, which
+// fire from the same class of hang.
+bool wdtCausedReboot() {
+  esp_reset_reason_t r = esp_reset_reason();
+  return r == ESP_RST_TASK_WDT || r == ESP_RST_WDT;
+}
+
+// True when the previous boot ended in a brownout. The reader runs off a
+// battery that is only plugged in briefly, and WiFi TX peaks near 500 mA, so a
+// sync is exactly the workload that can drop the rail. A brownout reset is not
+// a watchdog reset, so it needs its own skip.
+bool brownoutCausedReboot() {
+  return esp_reset_reason() == ESP_RST_BROWNOUT;
+}
+
+// The boot sync arms this flag in NVS before it starts and clears it as soon as
+// the sync returns, whatever the outcome. Finding it still set at boot means
+// the previous boot sync never returned: watchdog, brownout, panic, or a pulled
+// plug. That is the general form of the reset-reason checks, and the one that
+// actually breaks a boot loop.
+bool bootSyncFlagSet() {
+  Preferences p;
+  if (!p.begin(NVS_NS_NEWS, true)) return false;
+  bool v = p.getBool(NVS_KEY_BOOT_SYNC, false);
+  p.end();
+  return v;
+}
+
+void setBootSyncFlag(bool on) {
+  Preferences p;
+  if (!p.begin(NVS_NS_NEWS, false)) return;
+  if (on) {
+    p.putBool(NVS_KEY_BOOT_SYNC, true);
+  } else {
+    p.remove(NVS_KEY_BOOT_SYNC);
+  }
+  p.end();
+}
+
+// Set for the life of the boot when the boot sync was skipped by the guard, so
+// the menu header can say so. Not persisted: the next boot either syncs or sets
+// it again.
+bool autoSyncSkipped = false;
+
+void showEmptyLibrary(const String &reason) {
+  state = AppState::EMPTY;
+  std::vector<String> lines;
+  lines.push_back("No book to read.");
+  lines.push_back("");
+  if (reason.length()) {
+    lines.push_back(reason);
+    lines.push_back("");
+  }
+  lines.push_back("Convert a text with the host side converter in tools/,");
+  lines.push_back("drop the .pgs file into data/books/, then run:");
+  lines.push_back("");
+  lines.push_back("    pio run -e esp32s3 -t uploadfs");
+  lines.push_back("");
+  lines.push_back("Reset the board and the first page appears here.");
+  ui::renderMessage("muon reader", lines);
+}
+
+void renderCurrentPage(bool forceFull = false) {
+  if (!book.isOpen()) {
+    showEmptyLibrary("");
+    return;
+  }
+  if (!book.loadPage(currentPage, pageData)) {
+    pageData.clear();
+    pageData.text = "(this page could not be read)";
+  }
+  if (pageData.isImage) {
+    ui::renderImagePage(book.title(), pageData.bits(), pageData.width,
+                        pageData.height, pageData.flags, currentPage,
+                        book.pageCount());
+    return;
+  }
+  String text = pageData.text;
+  if (!text.length()) text = "(this page is empty)";
+  ui::renderPage(book.title(), text, book.fontId(), currentPage,
+                 book.pageCount(), forceFull);
+}
+
+void setPage(uint32_t page, bool forceFull = false) {
+  if (!book.isOpen()) return;
+  if (page >= book.pageCount()) page = book.pageCount() - 1;
+  currentPage = page;
+  books::savePosition(book.slug(), currentPage, book.activeVariant());
+  renderCurrentPage(forceFull);
+}
+
+bool openBook(const String &slug) {
+  if (!book.open(slug)) {
+    logf("book open failed: %s (%s)\n", slug.c_str(), book.errorText().c_str());
+    return false;
+  }
+  uint8_t variant = 0;
+  currentPage = books::loadPosition(slug, &variant);
+  if (variant >= book.variantCount()) variant = 0;
+  book.setVariant(variant);
+  if (currentPage >= book.pageCount()) currentPage = 0;
+  books::saveCurrentSlug(slug);
+  return true;
+}
+
+// Menu header: live sensor readings, the watchdog reboot count when there is
+// one, and the last news sync stamp when there is one.
+String sensorHeader() {
+  String s;
+  if (!bmeOk) {
+    s = "sensor n/a";
+  } else {
+    float t = bme.readTemperature();
+    float h = bme.readHumidity();
+    float p = bme.readPressure() / 100.0f;
+    char buf[80];
+    snprintf(buf, sizeof(buf), "%.1f C   %.1f %%   %.1f hPa", t, h, p);
+    s = String(buf);
+  }
+  if (wdtRebootCount > 0) {
+    s += "   wdt " + String((unsigned long)wdtRebootCount);
+  }
+  if (autoSyncSkipped) s += "   auto sync skipped";
+  String stamp = news_sync::lastStamp();
+  if (stamp.length()) s += "   synced " + stamp;
+  return s;
+}
+
+// Re-reads every saved position so the menu shows current page numbers. The
+// open book's page count can change with its variant, so take that from the
+// book itself.
+void refreshLibrarySaved() {
+  for (size_t i = 0; i < library.size(); i++) {
+    uint8_t variant = 0;
+    library[i].savedPage = books::loadPosition(library[i].slug, &variant);
+    library[i].savedVariant = variant;
+    if (book.isOpen() && book.slug() == library[i].slug) {
+      library[i].pageCount = book.pageCount();
+    }
+    if (library[i].savedPage >= library[i].pageCount) library[i].savedPage = 0;
+  }
+}
+
+// The menu is built as a list of rows carrying what to do, not just a label:
+// the book list is variable length and the text size row only exists for a
+// book with more than one variant, so hard coded indices do not survive.
+enum class MenuAction {
+  RESUME,
+  OPEN_BOOK,
+  NUMBERS,
+  TEXT_SIZE,
+  SYNC_NEWS,
+  WIFI_SETUP,
+  WIFI_CHECK,
+  GAMES,
+  AUTO_SYNC,
+  JUMP,
+  BUTTON_TEST,
+};
+
+struct MenuRow {
+  String label;
+  String sub;     // small state line under the label on the tile, or empty
+  MenuAction action;
+  int bookIndex;  // index into `library`, or -1
+
+  MenuRow(const String &l, MenuAction a, int idx)
+      : label(l), action(a), bookIndex(idx) {}
+  MenuRow(const String &l, const String &s, MenuAction a, int idx)
+      : label(l), sub(s), action(a), bookIndex(idx) {}
+};
+
+bool hasTextSizeItem() {
+  return book.isOpen() && book.variantCount() > 1;
+}
+
+std::vector<MenuRow> menuRows() {
+  std::vector<MenuRow> rows;
+  // Each row is a tile: a bold label plus a small state line. Book tiles carry
+  // the saved position; action tiles carry their current state where there is
+  // one. The tile renderer cuts anything too wide with "..".
+  rows.push_back(MenuRow("Resume", book.isOpen() ? book.title() : String("no book"),
+                         MenuAction::RESUME, -1));
+  for (size_t i = 0; i < library.size(); i++) {
+    String pos = "p. " + String((unsigned long)(library[i].savedPage + 1)) +
+                 "/" + String((unsigned long)library[i].pageCount);
+    rows.push_back(MenuRow(library[i].title, pos, MenuAction::OPEN_BOOK, (int)i));
+  }
+  {
+    String stamp = news_sync::numbersStamp();
+    rows.push_back(MenuRow(METRICS_TITLE,
+                           stamp.length() ? "synced " + stamp : String("never synced"),
+                           MenuAction::NUMBERS, -1));
+  }
+  if (hasTextSizeItem()) {
+    String size = (book.fontId() == BOOK_FONT_PROFONT29) ? "Large" : "Normal";
+    rows.push_back(MenuRow("Text size", size, MenuAction::TEXT_SIZE, -1));
+  }
+  {
+    String stamp = news_sync::lastStamp();
+    rows.push_back(MenuRow("Sync feeds",
+                           stamp.length() ? "synced " + stamp : String("never synced"),
+                           MenuAction::SYNC_NEWS, -1));
+  }
+  {
+    size_t n = wifi_store::list().size();
+    String nets = String((unsigned long)n) + (n == 1 ? " network" : " networks");
+    rows.push_back(MenuRow("WiFi setup", nets, MenuAction::WIFI_SETUP, -1));
+  }
+  rows.push_back(MenuRow("Check WiFi", MenuAction::WIFI_CHECK, -1));
+  {
+    size_t n = games::romCount();
+    rows.push_back(MenuRow("Games", String((unsigned long)n) + (n == 1 ? " rom" : " roms"),
+                           MenuAction::GAMES, -1));
+  }
+  rows.push_back(MenuRow("Auto sync",
+                         news_sync::autoSyncEnabled() ? "on" : "off",
+                         MenuAction::AUTO_SYNC, -1));
+  rows.push_back(MenuRow("Jump to page",
+                         book.isOpen() ? "page " + String((unsigned long)(currentPage + 1)) +
+                                             "/" + String((unsigned long)book.pageCount())
+                                       : String(""),
+                         MenuAction::JUMP, -1));
+  rows.push_back(MenuRow("Button test", "pad diagnostics", MenuAction::BUTTON_TEST, -1));
+  return rows;
+}
+
+// Rows to tiles for the renderer. The name survives from the one column list
+// so every call site stays as it was.
+std::vector<ui::MenuTile> labelsOf(const std::vector<MenuRow> &rows) {
+  std::vector<ui::MenuTile> out;
+  out.reserve(rows.size());
+  for (size_t i = 0; i < rows.size(); i++) {
+    out.push_back(ui::MenuTile(rows[i].label, rows[i].sub));
+  }
+  return out;
+}
+
+// Switches text size and keeps the reading position: the new page is the one
+// whose anchor is at or before the anchor of the page being read.
+void toggleTextSize() {
+  if (!hasTextSizeItem()) return;
+  uint8_t next = (uint8_t)((book.activeVariant() + 1) % book.variantCount());
+  uint32_t mapped = book.mapPage(currentPage, next);
+  if (!book.setVariant(next)) return;
+  currentPage = mapped;
+  if (currentPage >= book.pageCount()) currentPage = 0;
+  books::savePosition(book.slug(), currentPage, book.activeVariant());
+  refreshLibrarySaved();
+  logf("text size: variant %u, page %lu/%lu\n", (unsigned)book.activeVariant(),
+       (unsigned long)(currentPage + 1), (unsigned long)book.pageCount());
+  state = AppState::READING;
+  renderCurrentPage(true);
+}
+
+void openMenu() {
+  state = AppState::MENU;
+  menuCursor = 0;
+  refreshLibrarySaved();
+  ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+}
+
+// One frame of the numbers view: the grid in the current window, or the
+// chart when the window index sits one past the feed's windows.
+void renderNumbers() {
+  if (numbersWindow >= (int)numbersData.windows.size()) {
+    numbers_view::renderChart(numbersData, numbersScreen, numbersChart);
+  } else {
+    numbers_view::render(numbersData, numbersScreen, numbersWindow);
+  }
+}
+
+// Opens the daily numbers view on the screen it was last left at. Without a
+// numbers file (never synced, or the sync failed) a status screen says so and
+// CENTER is the only way out.
+void openNumbers() {
+  state = AppState::NUMBERS;
+  numbersLoaded = false;
+  if (!numbers_view::available()) {
+    numbers_view::renderMissing("");
+    return;
+  }
+  String err;
+  if (!numbers_view::load(numbersData, &err)) {
+    logf("numbers load failed: %s\n", err.c_str());
+    numbers_view::renderMissing(err);
+    return;
+  }
+  numbersLoaded = true;
+  if (numbersScreen >= numbersData.screens()) numbersScreen = 0;
+  if (numbersWindow > (int)numbersData.windows.size()) numbersWindow = 0;
+  renderNumbers();
+}
+
+void leaveNumbers() {
+  numbersData = numbers_view::Data();
+  numbersLoaded = false;
+  openMenu();
+}
+
+void handleNumbers(Button b) {
+  if (!numbersLoaded) {
+    if (b == BTN_CENTER) leaveNumbers();
+    return;
+  }
+  const int total = numbersData.screens();
+  // The feed's windows plus the chart window, which the right pad reaches
+  // last and wraps back from to the first window.
+  const int windows = (int)numbersData.windows.size() + 1;
+  const bool charting = numbersWindow >= windows - 1;
+  auto metricsHere = [&]() -> int {
+    if (numbersScreen >= (int)numbersData.projects.size()) return 0;
+    return (int)numbersData.projects[numbersScreen].metrics.size();
+  };
+  switch (b) {
+    // DOWN = next project (in the chart window, next metric, spilling into
+    // the next project), the founder's "right" (BTN_LEFT) = next time
+    // window, both wrapping; UP and RIGHT are the reverse moves when present,
+    // never required.
+    case BTN_DOWN:
+      if (charting && numbersChart + 1 < metricsHere()) {
+        numbersChart++;
+      } else {
+        numbersScreen = (numbersScreen + 1) % total;
+        numbersChart = 0;
+      }
+      renderNumbers();
+      break;
+    case BTN_UP:
+      if (charting && numbersChart > 0) {
+        numbersChart--;
+      } else {
+        numbersScreen = (numbersScreen + total - 1) % total;
+        numbersChart = charting ? metricsHere() - 1 : 0;
+        if (numbersChart < 0) numbersChart = 0;
+      }
+      renderNumbers();
+      break;
+    case BTN_LEFT:
+      numbersWindow = (numbersWindow + 1) % windows;
+      if (numbersWindow == windows - 1) numbersChart = 0;
+      renderNumbers();
+      break;
+    case BTN_RIGHT:
+      numbersWindow = (numbersWindow + windows - 1) % windows;
+      if (numbersWindow == windows - 1) numbersChart = 0;
+      renderNumbers();
+      break;
+    case BTN_CENTER:
+      leaveNumbers();
+      break;
+    default:
+      break;
+  }
+}
+
+// Waits for a button or a timeout, whichever comes first, feeding the
+// watchdog. Used to hold a result screen up long enough to read, and to give
+// the boot sync a grace window the reader can cancel. Returns true if a button
+// ended the wait.
+bool waitForButtonOr(uint32_t ms) {
+  uint32_t start = millis();
+  while (millis() - start < ms) {
+    esp_task_wdt_reset();
+    Button b;
+    if (input::poll(b)) return true;
+    delay(BUTTON_POLL_MS);
+  }
+  return false;
+}
+
+// Runs a news sync with progress on the panel, then folds the result back into
+// the library. Returns true if the brief on the device changed.
+bool runNewsSync() {
+  bool changed = false;
+  auto progress = [](const String &line) {
+    std::vector<String> lines;
+    lines.push_back("Sync feeds");
+    lines.push_back("");
+    lines.push_back(line);
+    ui::renderStatusScreen("feed sync", lines);
+  };
+
+  news_sync::Outcome out = news_sync::sync(progress);
+
+  std::vector<String> lines;
+  lines.push_back("Sync feeds");
+  lines.push_back("");
+  switch (out.result) {
+    case news_sync::Result::OK:
+      if (out.pages > 0) {
+        lines.push_back(String((unsigned long)out.pages) + " pages");
+      }
+      if (out.numbers) lines.push_back("daily numbers updated");
+      lines.push_back("done");
+      changed = true;
+      break;
+    case news_sync::Result::NOT_MODIFIED:
+      lines.push_back("up to date");
+      break;
+    case news_sync::Result::NO_NETWORKS:
+      lines.push_back("error: no saved network");
+      lines.push_back("");
+      lines.push_back("Run WiFi setup first.");
+      break;
+    default:
+      lines.push_back("error: " + out.message);
+      break;
+  }
+  String stamp = news_sync::lastStamp();
+  if (stamp.length()) {
+    lines.push_back("");
+    lines.push_back("last sync " + stamp);
+  }
+  ui::renderStatusScreen("feed sync", lines);
+  waitForButtonOr(3000);
+
+  if (changed) {
+    // The brief was rewritten under us. Reopen it if it is the book on screen,
+    // and rescan so the library entry picks up the new title and page count.
+    if (book.isOpen() && book.slug() == NEWS_SLUG) {
+      openBook(NEWS_SLUG);
+    }
+    library = books::list();
+    refreshLibrarySaved();
+  }
+  return changed;
+}
+
+// Live pad state on glass, because the panel is the only diagnostic channel
+// that works when the USB CDC console is not being read. Shows which lines are
+// active right now plus the last few distinct combinations, so a single tap
+// that pulls two GPIOs is visible as "L R" on one history line rather than as
+// two separate events nobody can tell apart afterwards.
+//
+// Exits on its own once the pad has been left alone, since every button is
+// under test and none of them can be spent on "done".
+void runButtonTest() {
+  const char *names[BTN_COUNT] = {"UP", "DOWN", "LEFT", "RIGHT", "CENTER"};
+  const int gpios[BTN_COUNT] = {PIN_BTN_UP, PIN_BTN_DOWN, PIN_BTN_LEFT,
+                                PIN_BTN_RIGHT, PIN_BTN_CENTER};
+  std::vector<String> history;
+  uint8_t lastMask = 0;
+  uint32_t lastActivity = millis();
+  const uint32_t kIdleExitMs = 12000;
+
+  auto maskText = [&](uint8_t m) {
+    String s;
+    for (int i = 0; i < BTN_COUNT; i++) {
+      if (m & (1 << i)) {
+        if (s.length()) s += " ";
+        s += names[i];
+      }
+    }
+    return s.length() ? s : String("(none)");
+  };
+
+  auto draw = [&](uint32_t secsLeft) {
+    std::vector<String> lines;
+    lines.push_back("Button test");
+    lines.push_back("");
+    lines.push_back("Press each direction once. Every line that goes");
+    lines.push_back("active is listed, so a press that pulls two pins");
+    lines.push_back("shows both names on the same history row.");
+    lines.push_back("");
+    String pins = "gpio";
+    for (int i = 0; i < BTN_COUNT; i++) {
+      pins += "  " + String(names[i]) + " " + String(gpios[i]);
+    }
+    lines.push_back(pins);
+    lines.push_back("");
+    lines.push_back("now:  " + maskText(input::liveMask()));
+    lines.push_back("");
+    lines.push_back("history, newest last:");
+    for (size_t i = 0; i < history.size(); i++) {
+      lines.push_back("  " + history[i]);
+    }
+    lines.push_back("");
+    lines.push_back("Leaves this screen after " + String((unsigned long)secsLeft) +
+                    "s with the pad untouched.");
+    ui::renderStatusScreen("button test", lines);
+  };
+
+  draw(kIdleExitMs / 1000);
+
+  while (true) {
+    esp_task_wdt_reset();
+    uint8_t m = input::liveMask();
+    if (m != lastMask) {
+      // Only presses are interesting; a release is the same combination going
+      // away and would double every history entry.
+      if (m != 0) {
+        // Watch the pad for a moment before recording: a second line pulled by
+        // the same press does not necessarily go active on the same
+        // microsecond, and the redraw below is blocking, so anything not
+        // gathered here is lost.
+        uint32_t watchStart = millis();
+        while (millis() - watchStart < 250) {
+          esp_task_wdt_reset();
+          m |= input::liveMask();
+          delay(BUTTON_POLL_MS);
+        }
+        String entry = String((unsigned long)history.size() + 1) + ". " + maskText(m);
+        if (history.empty() || history.back() != entry) history.push_back(entry);
+        if (history.size() > 12) history.erase(history.begin());
+      }
+      lastMask = m;
+      lastActivity = millis();
+      draw(kIdleExitMs / 1000);
+    }
+    uint32_t idle = millis() - lastActivity;
+    if (idle >= kIdleExitMs) break;
+    delay(BUTTON_POLL_MS);
+  }
+
+  input::flush();
+}
+
+void enterJump() {
+  if (!book.isOpen()) {
+    openMenu();
+    return;
+  }
+  state = AppState::JUMP;
+  jumpTarget = currentPage + 1;
+  ui::renderJump(book.title(), jumpTarget, book.pageCount());
+}
+
+void handleReading(Button b) {
+  switch (b) {
+    // Founder holds the device so LEFT is the natural "forward" tilt. With the
+    // portrait UI the page also runs top to bottom, so DOWN reads as "further
+    // on" and is a second next-page; UP is a second previous-page. The menu
+    // still owns UP/DOWN for cursor movement, which is why this mapping lives
+    // here and not in the shared handler.
+    // 2026-09-10: only the GPIO 1 (BTN_LEFT) and GPIO 41 (BTN_DOWN) pads
+    // survived the case build, so those two must cover both directions:
+    // BTN_LEFT is the founder's "right" = forward, BTN_DOWN = back.
+    case BTN_LEFT:
+    case BTN_RIGHT:
+      if (book.isOpen() && currentPage + 1 < book.pageCount()) {
+        setPage(currentPage + 1);
+      }
+      break;
+    case BTN_DOWN:
+    case BTN_UP:
+      if (book.isOpen() && currentPage > 0) setPage(currentPage - 1);
+      break;
+    case BTN_CENTER:
+      openMenu();
+      break;
+    default:
+      break;
+  }
+}
+
+void handleMenu(Button b) {
+  std::vector<MenuRow> rows = menuRows();
+  int count = (int)rows.size();
+  if (menuCursor >= count) menuCursor = count - 1;
+
+  // Grid navigation. The tiles are laid out row major in `cols` columns, so
+  // row = cursor / cols and column = cursor % cols. Only DOWN, LEFT (the
+  // founder's "right") and CENTER work on this unit; UP and RIGHT are the
+  // reverse moves and are never required. There is no back button: the menu
+  // is left via the Resume tile.
+  const int cols = ui::menuColumns();
+  const int col = menuCursor % cols;
+
+  switch (b) {
+    case BTN_DOWN:
+      // Next row in the same column, wrapping to the top of that column.
+      menuCursor += cols;
+      if (menuCursor >= count) menuCursor = (col < count) ? col : 0;
+      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
+      break;
+    case BTN_UP: {
+      // Previous row in the same column, wrapping to the last row that has
+      // a tile in that column.
+      menuCursor -= cols;
+      if (menuCursor < 0) {
+        int last = ((count - 1 - col) / cols) * cols + col;
+        menuCursor = (last >= 0 && last < count) ? last : 0;
+      }
+      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
+      break;
+    }
+    case BTN_LEFT:
+      // Next column within the row; the last column wraps to the first
+      // column of the same row (an odd tail row has only one column).
+      if (col + 1 < cols && menuCursor + 1 < count) {
+        menuCursor += 1;
+      } else {
+        menuCursor -= col;
+      }
+      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
+      break;
+    case BTN_RIGHT:
+      // Previous column within the row, wrapping to the last tile of the row.
+      if (col > 0) {
+        menuCursor -= 1;
+      } else {
+        int last = menuCursor - col + cols - 1;
+        if (last >= count) last = count - 1;
+        menuCursor = last;
+      }
+      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
+      break;
+    case BTN_CENTER: {
+      const MenuRow &row = rows[menuCursor];
+      switch (row.action) {
+        case MenuAction::RESUME:
+          if (book.isOpen()) {
+            state = AppState::READING;
+            renderCurrentPage(true);
+          } else {
+            showEmptyLibrary("");
+          }
+          break;
+        case MenuAction::NUMBERS:
+          openNumbers();
+          break;
+        case MenuAction::OPEN_BOOK:
+          if (row.bookIndex >= 0 && row.bookIndex < (int)library.size()) {
+            String slug = library[row.bookIndex].slug;
+            if (openBook(slug)) {
+              state = AppState::READING;
+              renderCurrentPage(true);
+            } else {
+              showEmptyLibrary("Could not open " + slug);
+            }
+          }
+          break;
+        case MenuAction::TEXT_SIZE:
+          toggleTextSize();
+          break;
+        case MenuAction::SYNC_NEWS:
+          runNewsSync();
+          menuCursor = 0;
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+        case MenuAction::WIFI_SETUP:
+          wifi_setup::run();
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+        case MenuAction::WIFI_CHECK:
+          wifi_check::run();
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+        case MenuAction::GAMES:
+          games::run();
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+        case MenuAction::AUTO_SYNC:
+          news_sync::setAutoSync(!news_sync::autoSyncEnabled());
+          logf("auto sync: %s\n", news_sync::autoSyncEnabled() ? "on" : "off");
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor, true);
+          break;
+        case MenuAction::JUMP:
+          enterJump();
+          break;
+        case MenuAction::BUTTON_TEST:
+          runButtonTest();
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// Moves the jump target by `delta` and wraps at both ends: one step back from
+// page 1 lands on the last page, one step past the end lands on page 1, so
+// the end of a book is one press away instead of a few hundred.
+void moveJump(long delta) {
+  long maxPage = (long)book.pageCount();
+  if (maxPage < 1) return;
+  long target = (long)jumpTarget + delta;
+  if (target < 1) target = maxPage;
+  else if (target > maxPage) target = 1;
+  jumpTarget = (uint32_t)target;
+  ui::renderJump(book.title(), jumpTarget, book.pageCount());
+}
+
+// Which way a pad moves the jump target. The d-pad sits on the back of the
+// unit and its silkscreen maps to the firmware names as: silk UP = BTN_LEFT,
+// silk LEFT = BTN_DOWN, silk RIGHT = BTN_UP, silk DOWN = BTN_RIGHT (dead on
+// this unit). So: silk up +1, silk right +10, silk left -10, and the dead
+// silk down would be -1. A hold repeats the pad's own step (pumpJumpHold).
+long jumpDeltaFor(Button b) {
+  switch (b) {
+    case BTN_LEFT: return JUMP_STEP_SMALL;
+    case BTN_DOWN: return -JUMP_STEP_LARGE;
+    case BTN_UP: return JUMP_STEP_LARGE;
+    case BTN_RIGHT: return -JUMP_STEP_SMALL;
+    default: return 0;
+  }
+}
+
+void handleJump(Button b) {
+  if (!book.isOpen()) {
+    showEmptyLibrary("");
+    return;
+  }
+  if (b == BTN_CENTER) {
+    state = AppState::READING;
+    setPage((uint32_t)(jumpTarget - 1), true);
+    return;
+  }
+  long delta = jumpDeltaFor(b);
+  if (delta) moveJump(delta);
+}
+
+// Hold to repeat in the jump view: a pad held longer than JUMP_HOLD_MS keeps
+// applying its own step every JUMP_REPEAT_MS until it is released. Reads the live pin levels because the debounced
+// event stream only reports edges.
+uint32_t jumpHeldSince = 0;
+uint32_t jumpLastRepeat = 0;
+Button jumpHeldButton = BTN_COUNT;
+
+void pumpJumpHold() {
+  uint8_t live = input::liveMask();
+  Button held = BTN_COUNT;
+  for (int i = 0; i < BTN_COUNT; i++) {
+    Button b = (Button)i;
+    if ((live & (1 << i)) && jumpDeltaFor(b) != 0) {
+      held = b;
+      break;
+    }
+  }
+  uint32_t now = millis();
+  if (held == BTN_COUNT || held != jumpHeldButton) {
+    jumpHeldButton = held;
+    jumpHeldSince = now;
+    jumpLastRepeat = now;
+    return;
+  }
+  if (now - jumpHeldSince < JUMP_HOLD_MS) return;
+  if (now - jumpLastRepeat < JUMP_REPEAT_MS) return;
+  jumpLastRepeat = now;
+  moveJump(jumpDeltaFor(held));
+}
+
+}  // namespace
+
+void setup() {
+  // A power glitch in the hand wiring can hard-fault the MCU mid-read; the
+  // panel keeps its image, so a crash looks like dead buttons. The watchdog
+  // turns that into a self-recovering reboot (boot redraws the saved page).
+  // Read the reset reason before arming, so the count below reflects the boot
+  // we just came out of.
+  bool cameFromWdt = wdtCausedReboot();
+  wdtBegin();
+
+  Serial.begin(115200);
+
+  ui::begin();
+
+  if (!LittleFS.begin()) {
+    logf("LittleFS mount failed\n");
+  }
+
+  {
+    File f = LittleFS.open("/wdt.cnt", "r");
+    if (f) {
+      wdtRebootCount = (uint32_t)f.readString().toInt();
+      f.close();
+    }
+    if (cameFromWdt) {
+      wdtRebootCount++;
+      File w = LittleFS.open("/wdt.cnt", "w");
+      if (w) {
+        w.print((unsigned long)wdtRebootCount);
+        w.close();
+      }
+      logf("watchdog reboot #%lu\n", (unsigned long)wdtRebootCount);
+    }
+  }
+
+  Wire.begin(PIN_BME_SDA, PIN_BME_SCL);
+  bmeOk = bme.begin(BME280_ADDR_PRIMARY, &Wire) ||
+          bme.begin(BME280_ADDR_SECONDARY, &Wire);
+  if (!bmeOk) logf("BME280 not found, menu will show sensor n/a\n");
+
+  input::begin();
+
+  // The daily numbers feed used to be paginated into a book; since the grid
+  // view it is a JSON file, and whatever the old version left in /books is
+  // dead weight the library scan skips. Clear it and never resume into it.
+  LittleFS.remove(BOOKS_DIR "/" METRICS_SLUG ".pgs");
+  LittleFS.remove(BOOKS_DIR "/" METRICS_SLUG ".pos");
+
+  library = books::list();
+  String slug = books::loadCurrentSlug();
+  if (slug == METRICS_SLUG) slug = "";
+  bool opened = false;
+  if (slug.length()) opened = openBook(slug);
+  if (!opened && !library.empty()) opened = openBook(library[0].slug);
+
+  if (opened) {
+    state = AppState::READING;
+    // First frame after a cold boot is always a full refresh.
+    renderCurrentPage(true);
+  } else {
+    showEmptyLibrary(slug.length() ? ("Missing book: " + slug) : String(""));
+  }
+
+  // Auto sync is off by default and is a menu toggle, not a timer: the reader
+  // has no clock between boots, so "older than 12 hours" is not a question it
+  // can answer. Boot to the page first, then sync, so the reading page is on
+  // glass as fast as it ever was and the sync is what waits.
+  //
+  // The boot sync is guarded three ways, because a sync that kills the device
+  // is a reboot loop the reader cannot get out of: the menu is only reachable
+  // once the sync has finished.
+  //
+  //  1. The NVS "bootsync" flag is armed just before the sync and cleared the
+  //     moment it returns. Still set at boot means the last boot sync never
+  //     returned, for any reason at all: watchdog, brownout, panic, or the
+  //     battery being unplugged mid-transfer. Clear it and skip this boot.
+  //  2. A watchdog reset skips the sync (the flag covers this too, but the
+  //     reason is cheaper to trust than a flash write that may not have
+  //     landed).
+  //  3. A brownout reset skips it as well. WiFi TX peaks near 500 mA and this
+  //     reader runs off a battery, so the sync is what browns the rail out.
+  //
+  // One quiet boot breaks the loop either way, and the menu header says
+  // "auto sync skipped" so the reader knows why the brief is stale.
+  bool bootSyncDied = bootSyncFlagSet();
+  if (bootSyncDied) {
+    setBootSyncFlag(false);
+    logf("previous boot sync did not return, skipping this boot\n");
+  }
+  bool guardBlocks = bootSyncDied || cameFromWdt || brownoutCausedReboot();
+  if (guardBlocks) autoSyncSkipped = true;
+
+  if (news_sync::autoSyncEnabled() && !wifi_store::list().empty() &&
+      !guardBlocks) {
+    // Grace window: the page is already on glass, so give the reader a few
+    // seconds to take the device before the radio comes up. A press means they
+    // wanted the page, not a sync.
+    if (waitForButtonOr(AUTO_SYNC_GRACE_MS)) {
+      autoSyncSkipped = true;
+      logf("auto sync cancelled by button\n");
+      input::flush();
+      return;
+    }
+    setBootSyncFlag(true);
+    bool changed = runNewsSync();
+    setBootSyncFlag(false);
+    if (state == AppState::READING) {
+      renderCurrentPage(true);
+    } else if (changed) {
+      // Two feeds now land in the library; open the brief by slug rather
+      // than whatever sorts first.
+      library = books::list();
+      if (!library.empty() &&
+          (openBook(NEWS_FEEDS[0].slug) || openBook(library[0].slug))) {
+        state = AppState::READING;
+        renderCurrentPage(true);
+      } else {
+        showEmptyLibrary("");
+      }
+    } else {
+      showEmptyLibrary(slug.length() ? ("Missing book: " + slug) : String(""));
+    }
+  }
+
+  input::flush();
+}
+
+void loop() {
+  esp_task_wdt_reset();
+  if (state == AppState::JUMP) pumpJumpHold();
+  Button b;
+  if (input::poll(b)) {
+    switch (state) {
+      case AppState::READING:
+        handleReading(b);
+        break;
+      case AppState::MENU:
+        handleMenu(b);
+        break;
+      case AppState::JUMP:
+        handleJump(b);
+        break;
+      case AppState::NUMBERS:
+        handleNumbers(b);
+        break;
+      case AppState::EMPTY:
+        if (b == BTN_CENTER) {
+          library = books::list();
+          if (!library.empty() && openBook(library[0].slug)) {
+            state = AppState::READING;
+            renderCurrentPage(true);
+          } else {
+            openMenu();
+          }
+        }
+        break;
+    }
+    // Every branch above may have spent half a second or more inside a panel
+    // refresh with nobody polling. Discard whatever piled up in that window so
+    // the next page turn is one the reader actually saw.
+    input::flush();
+  }
+  delay(BUTTON_POLL_MS);
+}
