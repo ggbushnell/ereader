@@ -26,6 +26,9 @@ uint8_t *wramBuffer();
 // Marks the buffer as a fresh snapshot: stamps the millis clock and bumps the
 // counter. `len` must be WRAM_BYTES.
 void wramCommit(size_t len);
+// Forgets the last snapshot, so a restarted games server shows its status
+// screen until the page sends a fresh one.
+void wramInvalidate();
 
 const uint8_t *wram();
 bool wramValid();

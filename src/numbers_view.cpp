@@ -31,6 +31,14 @@ const int ACCENT_Y = 50;         // 2 px hairline, clear of the label descenders
 const int VALUE_BASELINE = 104;  // fub42 digits are 42 px tall
 const int FOOT_BASELINE = 128;   // 7x14 avg and delta
 
+// Ads screen: the channel name sits on its own line between the headline and
+// the grid, so the grid starts lower and the tile loses a few pixels. The
+// tile content (deepest baseline 128) still clears it.
+const int ADS_CHAN_BASELINE_Y = ui::HEADER_H + 72;  // 116, profont22
+const int ADS_GRID_TOP = ui::HEADER_H + 80;         // 124
+const int ADS_TILE_H =
+    (ui::GRID_BOTTOM - ADS_GRID_TOP - ui::GRID_GUTTER * (ROWS - 1)) / ROWS;  // 141
+
 // Notes screen: one line per note in the body font, below the headline.
 const int NOTES_FIRST_BASELINE = GRID_TOP + 30;
 const int NOTES_PITCH = 32;
@@ -49,7 +57,9 @@ const int DOT = 5;
 // of 50 metrics is under 20 KB); ArduinoJson wants about twice the text in
 // heap for the parsed document, and it is freed again the moment the strings
 // are copied out.
-const size_t MAX_JSON_BYTES = 96 * 1024;
+// The ads block adds up to ten more metrics with their own histories, so the
+// cap is a little above what 60 metrics of 90 days come to.
+const size_t MAX_JSON_BYTES = 128 * 1024;
 
 // Characters fub42_tn can draw. Anything else in a value (the "M" or "k" of a
 // compact number) is printed in helvB24 after the numeric part.
@@ -98,6 +108,17 @@ void parseHistory(JsonVariantConst v, std::vector<float> &out) {
   }
 }
 
+// One metric object, the same shape wherever it appears (a project's grid or
+// an ads channel's column).
+void parseMetric(JsonObjectConst m, numbers_view::Metric &out) {
+  out.label = jsonString(m["l"]);
+  jsonStrings(m["v"], out.value);
+  jsonStrings(m["a"], out.foot);
+  jsonStrings(m["d"], out.delta);
+  parseHistory(m["h"], out.hist);
+  out.histOffset = m["ho"].as<int>();
+}
+
 // "12,345" / "1.2M" / "45k" style for the chart's value labels. Small values
 // keep one decimal when they have one.
 String compactValue(float v) {
@@ -142,34 +163,45 @@ void drawHeader(const String &name, const String &right) {
   ui::setInk(false);
 }
 
-// The value, as large as it fits: fub42 for the digits, with any trailing
-// letters (the "M" of "123.5M") in helvB24 on the same baseline, since the
-// numeric font has no letters. Falls back to helvB24 for the whole string
-// when even that is too wide or the value is not a number at all.
+// The value, as large as it fits: fub42 for the digits, with any leading
+// symbol (the "$" of "$41.20") and any trailing letters (the "M" of
+// "123.5M") in helvB24 on the same baseline, since the numeric font has
+// neither. Falls back to helvB24 for the whole string when even that is too
+// wide or the value is not a number at all.
 void drawValue(int x, int baselineY, const String &value, int maxW) {
-  int split = 0;
-  while (split < (int)value.length() && numGlyph(value[split])) split++;
-  String digits = value.substring(0, split);
+  const int len = (int)value.length();
+  int start = 0;
+  while (start < len && !numGlyph(value[start])) start++;
+  int split = start;
+  while (split < len && numGlyph(value[split])) split++;
+  String prefix = value.substring(0, start);
+  String digits = value.substring(start, split);
   String suffix = value.substring(split);
 
   bool big = digits.length() > 0;
+  int prefixW = 0;
+  int digitsW = 0;
   int w = 0;
   if (big) {
     ui::setFont(ui::Font::NUM);
-    w = ui::textWidth(digits);
-    if (suffix.length()) {
-      ui::setFont(ui::Font::LABEL);
-      w += ui::textWidth(suffix);
-    }
+    digitsW = ui::textWidth(digits);
+    ui::setFont(ui::Font::LABEL);
+    if (prefix.length()) prefixW = ui::textWidth(prefix) + 2;
+    w = prefixW + digitsW;
+    if (suffix.length()) w += ui::textWidth(suffix) + 2;
     if (w > maxW) big = false;
   }
 
   if (big) {
+    if (prefix.length()) {
+      ui::setFont(ui::Font::LABEL);
+      ui::printAt(x, baselineY, prefix);
+    }
     ui::setFont(ui::Font::NUM);
-    ui::printAt(x, baselineY, digits);
+    ui::printAt(x + prefixW, baselineY, digits);
     if (suffix.length()) {
       ui::setFont(ui::Font::LABEL);
-      ui::printAt(x + ui::textWidth(digits) + 2, baselineY, suffix);
+      ui::printAt(x + prefixW + digitsW + 2, baselineY, suffix);
     }
     return;
   }
@@ -177,9 +209,12 @@ void drawValue(int x, int baselineY, const String &value, int maxW) {
   ui::printAt(x, baselineY, ui::fitText(value, maxW));
 }
 
-void drawTile(int x, int y, const numbers_view::Metric &m, int w) {
+// One metric card. `h` is the tile height, which the project grid and the
+// slightly shorter ads grid set differently; everything inside is placed from
+// the tile's top edge, so only the frame cares.
+void drawTile(int x, int y, const numbers_view::Metric &m, int w, int h) {
   Adafruit_GFX &g = ui::gfx();
-  g.drawRect(x, y, ui::TILE_W, TILE_H, ui::INK_BLACK);
+  g.drawRect(x, y, ui::TILE_W, h, ui::INK_BLACK);
   const int textW = ui::TILE_W - 2 * ui::TILE_PAD;
   const int left = x + ui::TILE_PAD;
 
@@ -218,7 +253,31 @@ void drawProject(const numbers_view::Project &p, const String &right, int w) {
     int c = i % ui::GRID_COLS;
     int x = TEXT_MARGIN_X + c * (ui::TILE_W + ui::GRID_GUTTER);
     int y = GRID_TOP + r * (TILE_H + ui::GRID_GUTTER);
-    drawTile(x, y, p.metrics[i], w);
+    drawTile(x, y, p.metrics[i], w, TILE_H);
+  }
+}
+
+// The ads screen: a column per channel, a row per metric, so Spend sits
+// beside Spend. With one channel column 1 is left blank.
+void drawAds(const numbers_view::Ads &ads, const String &right, int w) {
+  drawHeader(ads.name, right);
+  ui::setFont(ui::Font::BODY);
+  ui::printAt(TEXT_MARGIN_X, HEADLINE_BASELINE_Y,
+              ui::fitText(ads.headline[w], SCREEN_W - 2 * TEXT_MARGIN_X));
+  int cols = (int)ads.channels.size();
+  if (cols > ui::GRID_COLS) cols = ui::GRID_COLS;
+  for (int c = 0; c < cols; c++) {
+    const numbers_view::Channel &ch = ads.channels[c];
+    int x = TEXT_MARGIN_X + c * (ui::TILE_W + ui::GRID_GUTTER);
+    ui::setFont(ui::Font::BODY);
+    ui::printAt(x + ui::TILE_PAD, ADS_CHAN_BASELINE_Y,
+                ui::fitText(ch.name, ui::TILE_W - 2 * ui::TILE_PAD));
+    int n = (int)ch.metrics.size();
+    if (n > ROWS) n = ROWS;
+    for (int i = 0; i < n; i++) {
+      int y = ADS_GRID_TOP + i * (ADS_TILE_H + ui::GRID_GUTTER);
+      drawTile(x, y, ch.metrics[i], w, ADS_TILE_H);
+    }
   }
 }
 
@@ -331,8 +390,25 @@ void drawEmpty(const String &right) {
 namespace numbers_view {
 
 int Data::screens() const {
-  int n = (int)projects.size() + (notes.empty() ? 0 : 1);
+  int n = (int)projects.size() + (ads.present ? 1 : 0) + (notes.empty() ? 0 : 1);
   return n > 0 ? n : 1;
+}
+
+int Data::adsScreen() const {
+  return ads.present ? (int)projects.size() : -1;
+}
+
+int metricsOnScreen(const Data &data, int screen) {
+  if (screen < 0) return 0;
+  if (screen < (int)data.projects.size()) {
+    return (int)data.projects[screen].metrics.size();
+  }
+  if (screen == data.adsScreen()) {
+    int n = 0;
+    for (const Channel &c : data.ads.channels) n += (int)c.metrics.size();
+    return n;
+  }
+  return 0;
 }
 
 bool available() { return LittleFS.exists(NUMBERS_FILE); }
@@ -401,16 +477,34 @@ bool load(Data &out, String *err) {
     jsonStrings(p["headline"], proj.headline);
     for (JsonObjectConst m : p["metrics"].as<JsonArrayConst>()) {
       Metric metric;
-      metric.label = jsonString(m["l"]);
-      jsonStrings(m["v"], metric.value);
-      jsonStrings(m["a"], metric.foot);
-      jsonStrings(m["d"], metric.delta);
-      parseHistory(m["h"], metric.hist);
-      metric.histOffset = m["ho"].as<int>();
+      parseMetric(m, metric);
       proj.metrics.push_back(metric);
       if (proj.metrics.size() >= (size_t)MAX_TILES) break;
     }
     if (proj.name.length()) out.projects.push_back(proj);
+  }
+
+  // The optional ads block: one screen, a column per channel. Absent in a
+  // feed with no ad spend in the last week, and then nothing changes.
+  JsonObjectConst ads = root["ads"].as<JsonObjectConst>();
+  if (!ads.isNull()) {
+    out.ads.name = jsonString(ads["name"]);
+    jsonStrings(ads["headline"], out.ads.headline);
+    for (JsonObjectConst c : ads["channels"].as<JsonArrayConst>()) {
+      if (out.ads.channels.size() >= (size_t)ui::GRID_COLS) break;
+      Channel ch;
+      ch.id = jsonString(c["id"]);
+      ch.name = jsonString(c["name"]);
+      for (JsonObjectConst m : c["metrics"].as<JsonArrayConst>()) {
+        Metric metric;
+        parseMetric(m, metric);
+        ch.metrics.push_back(metric);
+        if (ch.metrics.size() >= (size_t)ROWS) break;
+      }
+      if (ch.name.length()) out.ads.channels.push_back(ch);
+    }
+    if (!out.ads.name.length()) out.ads.name = "Ads";
+    out.ads.present = !out.ads.channels.empty();
   }
   for (JsonVariantConst n : root["notes"].as<JsonArrayConst>()) {
     String s = jsonString(n);
@@ -441,6 +535,8 @@ void render(const Data &data, int index, int window, bool forceFull) {
     ui::setInk(false);
     if (index < (int)data.projects.size()) {
       drawProject(data.projects[index], right, w);
+    } else if (index == data.adsScreen()) {
+      drawAds(data.ads, right, w);
     } else if (!data.notes.empty()) {
       drawNotes(data, right);
     } else {
@@ -463,30 +559,54 @@ void renderChart(const Data &data, int index, int metric, bool forceFull) {
   if (data.historyDays > 0) right += "  last " + String(data.historyDays) + " days";
   String footerLeft = "daily numbers  " + String(index + 1) + "/" + String(total);
 
-  const Project *p = index < (int)data.projects.size() ? &data.projects[index] : nullptr;
+  // The screen's band title, and the metric the chart index lands on. A
+  // project charts its own metrics; the ads screen charts its channels
+  // flattened, channel 0 first, and names the channel in the title.
+  const bool onProject = index < (int)data.projects.size();
+  const bool onAds = index == data.adsScreen();
+  String bandName;
+  String chartTitle;
   const Metric *m = nullptr;
-  if (p && !p->metrics.empty()) {
+  const int count = metricsOnScreen(data, index);
+  if (count > 0) {
     if (metric < 0) metric = 0;
-    if (metric >= (int)p->metrics.size()) metric = (int)p->metrics.size() - 1;
-    m = &p->metrics[metric];
-    footerLeft += "  chart " + String(metric + 1) + "/" + String((unsigned)p->metrics.size());
+    if (metric >= count) metric = count - 1;
+    footerLeft += "  chart " + String(metric + 1) + "/" + String(count);
+  }
+  if (onProject) {
+    bandName = data.projects[index].name;
+    if (count > 0) {
+      m = &data.projects[index].metrics[metric];
+      chartTitle = m->label;
+    }
+  } else if (onAds) {
+    bandName = data.ads.name;
+    int left = metric;
+    for (const Channel &c : data.ads.channels) {
+      if (left < (int)c.metrics.size()) {
+        m = &c.metrics[left];
+        chartTitle = c.name + ": " + m->label;
+        break;
+      }
+      left -= (int)c.metrics.size();
+    }
   }
 
   ui::frameBegin(forceFull);
   do {
     ui::gfx().fillScreen(ui::INK_WHITE);
     ui::setInk(false);
-    if (p && m) {
-      drawHeader(p->name, right);
+    if (m) {
+      drawHeader(bandName, right);
       // Headline slot: the metric and its latest value.
       ui::setFont(ui::Font::BODY);
-      String line = m->label;
+      String line = chartTitle;
       if (m->value[0].length()) line += "   " + m->value[0] + " yesterday";
       ui::printAt(TEXT_MARGIN_X, HEADLINE_BASELINE_Y,
                   ui::fitText(line, SCREEN_W - 2 * TEXT_MARGIN_X));
       drawChart(data, *m);
-    } else if (p) {
-      drawHeader(p->name, right);
+    } else if (onProject || onAds) {
+      drawHeader(bandName, right);
       ui::setFont(ui::Font::BODY);
       ui::printAt(TEXT_MARGIN_X, HEADLINE_BASELINE_Y, "No metrics to chart.");
     } else if (!data.notes.empty()) {

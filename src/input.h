@@ -47,4 +47,14 @@ uint8_t rawMask();
 // Same, sampled straight off the pins with no debounce.
 uint8_t liveMask();
 
+// Turned pad. When the picture is turned 180 degrees away from
+// DISPLAY_ROTATION ("Flip screen"), the pad is turned with it: every event and
+// mask above reports UP as DOWN, LEFT as RIGHT and the reverse, so the rest of
+// the firmware keeps thinking in directions as the reader sees them.
+void setTurned(bool turned);
+bool turned();
+
+// The GPIO a logical button currently reads, with the turn applied.
+int gpioFor(Button b);
+
 }  // namespace input

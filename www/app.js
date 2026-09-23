@@ -39,7 +39,9 @@
 
   function $(id) { return document.getElementById(id); }
   var dom = {};
-  ['library', 'status', 'romFile', 'uploadBtn', 'romList', 'empty', 'player', 'bar',
+  ['library', 'status', 'space', 'spaceUsed', 'bookFile', 'bookBtn', 'bookTitle',
+   'bookMsg', 'bookList', 'bookEmpty',
+   'romFile', 'uploadBtn', 'romList', 'empty', 'player', 'bar',
    'backBtn', 'romName', 'saveBtn', 'loadBtn', 'resetBtn', 'muteBtn', 'speedBtn', 'padBtn',
    'sync', 'stage', 'screen', 'pad'].forEach(function (k) { dom[k] = $(k); });
 
@@ -170,6 +172,18 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'name=' + encodeURIComponent(name)
+      });
+    },
+    books: function () {
+      return fetch('/api/books', { cache: 'no-store' }).then(function (r) { return r.json(); });
+    },
+    delBook: function (slug) {
+      return fetch('/api/books/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'slug=' + encodeURIComponent(slug)
+      }).then(function (r) {
+        if (!r.ok && r.status !== 404) throw new Error('delete ' + r.status);
       });
     }
   };
@@ -661,24 +675,66 @@
 
   // Injecting battery RAM into a fresh boot: take the boot-time state, swap in
   // the .sav bytes, load it back. That keeps us off WasmBoy's IndexedDB.
+  // Resolves true only when the bytes read back out of wasm memory equal the
+  // save; the caller must not upload battery RAM until that is true, or a
+  // boot that missed the restore would push a blank save over the real one.
   GbCore.prototype.restoreBattery = function (sav) {
     var self = this;
-    if (!sav || !sav.length) return Promise.resolve();
-    return this.snapshotRaw().then(function (st) {
-      if (!st || !st.wasmboyMemory || !st.wasmboyMemory.cartridgeRam) return;
-      var ram = new Uint8Array(st.wasmboyMemory.cartridgeRam.length);
-      ram.set(sav.subarray(0, Math.min(sav.length, ram.length)));
-      return WB.loadState({
-        wasmboyMemory: {
-          wasmBoyInternalState: new Uint8Array(st.wasmboyMemory.wasmBoyInternalState),
-          wasmBoyPaletteMemory: new Uint8Array(st.wasmboyMemory.wasmBoyPaletteMemory),
-          gameBoyMemory: new Uint8Array(st.wasmboyMemory.gameBoyMemory),
-          cartridgeRam: ram
-        },
-        date: Date.now(),
-        isAuto: false
+    if (!sav || !sav.length) return Promise.resolve(true);
+    var attempt = 0;
+    function verify() {
+      if (self.ramStart < 0 || !self.ramSize) return Promise.resolve(true);
+      return Promise.resolve(
+        WB._getWasmMemorySection(self.ramStart, self.ramStart + self.ramSize)
+      ).then(function (b) {
+        var ram = new Uint8Array(b);
+        var n = Math.min(ram.length, sav.length);
+        for (var i = 0; i < n; i++) {
+          if (ram[i] !== sav[i]) return false;
+        }
+        return n > 0;
+      }).catch(function () { return false; });
+    }
+    function once() {
+      attempt++;
+      // The core has to run a few frames before its first saveState: a
+      // snapshot taken before any frame ran loads back as a dead core
+      // (WasmBoy reports playing, nothing ever executes, black canvas).
+      // Gen 1 does not read its save until the title menu, seconds later,
+      // so a short burst of the boot logo is harmless.
+      return Promise.resolve(WB.play()).catch(function () {}).then(function () {
+        return new Promise(function (r) { setTimeout(r, 150); });
+      }).then(function () {
+        return Promise.resolve(WB.pause()).catch(function () {});
+      }).then(function () {
+        return self.snapshotRaw();
+      }).then(function (st) {
+        if (!st || !st.wasmboyMemory || !st.wasmboyMemory.cartridgeRam) {
+          throw new Error('no boot state');
+        }
+        var ram = new Uint8Array(st.wasmboyMemory.cartridgeRam.length);
+        ram.set(sav.subarray(0, Math.min(sav.length, ram.length)));
+        return WB.loadState({
+          wasmboyMemory: {
+            wasmBoyInternalState: new Uint8Array(st.wasmboyMemory.wasmBoyInternalState),
+            wasmBoyPaletteMemory: new Uint8Array(st.wasmboyMemory.wasmBoyPaletteMemory),
+            gameBoyMemory: new Uint8Array(st.wasmboyMemory.gameBoyMemory),
+            cartridgeRam: ram
+          },
+          date: Date.now(),
+          isAuto: false
+        });
+      }).then(verify).then(function (ok) {
+        if (ok) return true;
+        console.log('battery restore attempt ' + attempt + ' did not verify');
+        if (attempt >= 3) return false;
+        return new Promise(function (r) { setTimeout(r, 400); }).then(once);
       });
-    }).catch(function (e) { console.log('battery restore skipped:', errText(e)); });
+    }
+    return once().catch(function (e) {
+      console.log('battery restore failed:', errText(e));
+      return false;
+    });
   };
 
   // ---------------------------------------------------------------- session
@@ -707,6 +763,7 @@
   function uploadAuto(sync) {
     if (!session) return Promise.resolve();
     var s = session;
+    if (!s.autoOk) return Promise.resolve();
     return s.core.snapshot().then(function (payload) {
       return wrap(payload, s.core.kind === 'NES' ? CON_NES : CON_GB, sync);
     }).then(function (blob) {
@@ -729,6 +786,7 @@
   function uploadBattery() {
     if (!session) return Promise.resolve();
     var s = session;
+    if (!s.batteryOk) return Promise.resolve();
     return s.core.battery().then(function (ram) {
       if (!ram || !ram.length) return;
       var h = hash32(ram);
@@ -785,6 +843,26 @@
     });
   }
 
+  // A save state carries its own copy of the cartridge RAM. When that copy
+  // does not match the battery save the reader holds, the state is from
+  // another session (or a broken one) and its RAM must never be uploaded as
+  // the save. Uploads stay off until the game itself writes a save that
+  // matches, which only happens after a sane in-game save.
+  function checkStateAgainstSave() {
+    if (!session || session.core.kind === 'GB' && !session.core.ramSize) return Promise.resolve();
+    if (session.core.kind !== 'GB') return Promise.resolve();
+    var s = session;
+    return s.core.battery().then(function (ram) {
+      if (!ram || !ram.length) return;
+      if (hash32(ram) === s.savHash) return;
+      s.batteryOk = false;
+      s.autoOk = false;
+      s.batteryError = 'state differs from save, uploads off';
+      console.log('state cartridge RAM differs from the reader save; battery uploads off');
+      setSync(s.batteryError, 'bad');
+    }).catch(function () {});
+  }
+
   function manualLoad() {
     if (!session) return;
     var s = session;
@@ -792,7 +870,8 @@
     api.getSave(s.name, '.state').then(function (bytes) {
       if (!bytes) { setSync('no save state', 'bad'); return; }
       return unwrap(bytes).then(function (p) { return s.core.restore(p); })
-        .then(function () { setSync('loaded ' + hhmm(Date.now())); });
+        .then(function () { setSync('loaded ' + hhmm(Date.now())); })
+        .then(function () { return checkStateAgainstSave(); });
     }).catch(function (e) {
       console.log('load failed:', errText(e));
       setSync('load failed', 'bad');
@@ -828,7 +907,8 @@
     dom.screen.height = core.height;
 
     session = { name: name, core: core, muted: false, lastAuto: null,
-                savHash: 0, wramHash: 0, timers: [], savTimer: 0, speed: 1 };
+                savHash: 0, wramHash: 0, timers: [], savTimer: 0, speed: 1,
+                batteryOk: true, autoOk: true, batteryError: '' };
     dom.speedBtn.textContent = '1x';
 
     api.rom(name).then(function (rom) {
@@ -836,11 +916,21 @@
     }).then(function () {
       // Battery RAM goes in before the first frame runs, every time.
       if (!isNes) {
-        return api.getSave(name, '.sav').catch(function () { return null; })
-          .then(function (sav) {
-            if (sav) session.savHash = hash32(sav);
-            return core.restoreBattery(sav);
-          });
+        // A failed fetch (anything but a clean 404) or a restore that does
+        // not verify disables battery uploads for this session: the
+        // emulator then holds a save the reader does not, and pushing it
+        // would destroy the real one.
+        return api.getSave(name, '.sav').then(function (sav) {
+          if (sav) session.savHash = hash32(sav);
+          return core.restoreBattery(sav);
+        }).then(function (ok) {
+          session.batteryOk = !!ok;
+          if (!ok) session.batteryError = 'save not loaded, uploads off';
+        }).catch(function (e) {
+          console.log('battery fetch failed:', errText(e));
+          session.batteryOk = false;
+          session.batteryError = 'save fetch failed, uploads off';
+        });
       }
     }).then(function () {
       if (!isNes) return core.play();
@@ -849,11 +939,13 @@
       return newestSave(name).then(function (best) {
         if (!best) return;
         return unwrap(best.bytes).then(function (p) { return core.restore(p); })
-          .then(function () { console.log('continued from ' + new Date(best.h.time)); });
+          .then(function () { console.log('continued from ' + new Date(best.h.time)); })
+          .then(function () { return checkStateAgainstSave(); });
       }).catch(function (e) { console.log('continue failed:', errText(e)); });
     }).then(function () {
       fitCanvas();
-      setSync('not saved');
+      if (session.batteryError) setSync(session.batteryError, 'bad');
+      else setSync('not saved');
       session.timers.push(setInterval(function () { uploadAuto(false); }, AUTO_MS));
       // Keep the device's WiFi awake: it sleeps after 15 minutes with no request.
       session.timers.push(setInterval(function () {
@@ -884,6 +976,13 @@
       .catch(function () {})
       .then(function () {
         session = null;
+        if (s.core.kind === 'GB') {
+          // WasmBoy keeps the previous game's memory across loadROM, so a
+          // second ROM in the same page would boot on stale machine state.
+          // A reload is the only clean instance.
+          location.reload();
+          return;
+        }
         document.body.classList.remove('playing');
         dom.player.classList.add('hidden');
         dom.library.classList.remove('hidden');
@@ -896,6 +995,7 @@
   function flushOnHide() {
     if (!session) return;
     var s = session;
+    if (!s.autoOk) return;
     if (s.lastAuto) api.beaconSave(s.name, '.auto', s.lastAuto);
     // Battery RAM is read straight out of wasm memory, no pause involved, so
     // this one is safe on both cores even with the page already hidden.
@@ -1082,18 +1182,196 @@
     });
   }
 
+  // Last /api/ping answer. The book upload checks space against it before
+  // sending anything; the reader checks again on its side.
+  var reader = null;
+
   function pingStatus() {
     return api.ping().then(function (p) {
-      dom.status.textContent = 'reader connected · ' + fmtBytes(p.free) +
-        ' free · up ' + Math.floor(p.uptime / 60) + 'm';
+      reader = p;
+      var tail = p.total ? ' of ' + fmtBytes(p.total) : '';
+      dom.status.textContent = 'reader connected · ' + fmtBytes(p.free) + ' free' + tail +
+        ' · up ' + Math.floor(p.uptime / 60) + 'm';
       dom.status.className = '';
+      if (p.total) {
+        var used = Math.max(0, Math.min(1, 1 - p.free / p.total));
+        dom.spaceUsed.style.width = (used * 100).toFixed(1) + '%';
+        dom.spaceUsed.className = p.free < (p.reserve || 0) * 2 ? 'bad' : '';
+      }
     }).catch(function () {
       dom.status.textContent = 'reader not reachable';
       dom.status.className = 'bad';
     });
   }
 
+  // ---------------------------------------------------------------- books
+
+  function bookMsg(text, kind) {
+    dom.bookMsg.textContent = text || '';
+    dom.bookMsg.className = kind || '';
+  }
+
+  function bookRow(b) {
+    var row = document.createElement('div');
+    row.className = 'rom';
+
+    var badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = 'BOOK';
+    row.appendChild(badge);
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    var n = document.createElement('div');
+    n.className = 'name';
+    n.textContent = b.title || b.slug;
+    var sub = document.createElement('div');
+    sub.className = 'sub';
+    var bits = [b.pages + (b.pages === 1 ? ' page' : ' pages')];
+    if (b.page > 0) bits.push('at page ' + (b.page + 1));
+    if (b.sizes > 1) bits.push(b.sizes + ' text sizes');
+    bits.push(fmtBytes(b.size));
+    bits.push(b.slug + '.pgs');
+    sub.textContent = bits.join(' · ');
+    meta.appendChild(n); meta.appendChild(sub);
+    row.appendChild(meta);
+
+    // Two-tap confirm, same as the ROM rows.
+    var del = document.createElement('button');
+    del.className = 'btn danger';
+    del.textContent = 'Delete';
+    var armed = false, armTimer = 0;
+    del.onclick = function () {
+      if (!armed) {
+        armed = true;
+        del.textContent = 'Sure?';
+        armTimer = setTimeout(function () { armed = false; del.textContent = 'Delete'; }, 4000);
+        return;
+      }
+      clearTimeout(armTimer);
+      del.disabled = true;
+      api.delBook(b.slug).then(function () {
+        bookMsg('Deleted ' + (b.title || b.slug) + '.', 'good');
+      }).catch(function (e) {
+        bookMsg('Delete failed: ' + errText(e), 'bad');
+      }).then(function () {
+        return Promise.all([refreshBooks(), pingStatus()]);
+      });
+    };
+    row.appendChild(del);
+    return row;
+  }
+
+  function refreshBooks() {
+    return api.books().then(function (list) {
+      list.sort(function (a, b) {
+        return (a.title || a.slug).localeCompare(b.title || b.slug);
+      });
+      dom.bookList.textContent = '';
+      list.forEach(function (b) { dom.bookList.appendChild(bookRow(b)); });
+      dom.bookEmpty.classList.toggle('hidden', list.length > 0);
+    }).catch(function (e) {
+      console.log('book list failed:', errText(e));
+      dom.bookList.textContent = '';
+      dom.bookEmpty.classList.remove('hidden');
+    });
+  }
+
+  function isText(name) { return /\.txt$/i.test(name); }
+  function isBook(name) { return /\.(txt|pgs)$/i.test(name); }
+
+  function stemTitle(name) {
+    return name.replace(/\.[^.]*$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Bytes the reader needs free for this file, by the same rule the firmware
+  // applies: a .txt needs room for the text, both paginations and the finished
+  // book at once; either kind must leave the reserve free afterwards.
+  function bookNeeds(f) {
+    var factor = (reader && reader.txtFactor) || 5;
+    var reserve = (reader && reader.reserve) || 262144;
+    return (isText(f.name) ? f.size * factor : f.size) + reserve;
+  }
+
+  function uploadBook() {
+    var f = dom.bookFile.files[0];
+    if (!f) return;
+    if (!isBook(f.name)) {
+      bookMsg('Pick a .txt or .pgs file.', 'bad');
+      return;
+    }
+    if (reader && reader.txtMax && isText(f.name) && f.size > reader.txtMax) {
+      bookMsg('A .txt book can be at most ' + fmtBytes(reader.txtMax) +
+              '. Split it, or convert it on a computer with tools/txt2book.py.', 'bad');
+      return;
+    }
+    if (reader && typeof reader.free === 'number' && bookNeeds(f) > reader.free) {
+      bookMsg('Not enough space: this book needs about ' + fmtBytes(bookNeeds(f)) +
+              ' free and the reader has ' + fmtBytes(reader.free) +
+              '. Delete a book or a game first.', 'bad');
+      return;
+    }
+    var title = isText(f.name) ? (dom.bookTitle.value.trim() || stemTitle(f.name)) : '';
+    var url = '/api/books/upload?size=' + f.size +
+              (title ? '&title=' + encodeURIComponent(title) : '');
+    var fd = new FormData();
+    fd.append('book', f, f.name);
+
+    dom.bookBtn.disabled = true;
+    dom.bookFile.disabled = true;
+    bookMsg('Uploading...');
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var pct = Math.floor(e.loaded * 100 / e.total);
+      if (pct < 100) {
+        bookMsg('Uploading ' + pct + '%');
+      } else {
+        bookMsg(isText(f.name) ? 'Laying out pages on the reader...' : 'Checking the book...');
+      }
+    };
+    xhr.onload = function () {
+      var res = null;
+      try { res = JSON.parse(xhr.responseText); } catch (e) { res = null; }
+      if (xhr.status === 200 && res && res.ok) {
+        bookMsg('Added ' + res.title + ', ' + res.pages + ' pages. Find it in the reader\'s menu.', 'good');
+        dom.bookFile.value = '';
+        dom.bookTitle.value = '';
+      } else {
+        bookMsg('Not added: ' + ((res && res.error) || ('HTTP ' + xhr.status)), 'bad');
+      }
+      done();
+    };
+    xhr.onerror = function () {
+      bookMsg('Upload failed: the reader did not answer.', 'bad');
+      done();
+    };
+    function done() {
+      dom.bookFile.disabled = false;
+      syncBookForm();
+      refreshBooks();
+      pingStatus();
+    }
+    xhr.send(fd);
+  }
+
+  function syncBookForm() {
+    var f = dom.bookFile.files[0];
+    dom.bookBtn.disabled = !f;
+    dom.bookTitle.disabled = !(f && isText(f.name));
+  }
+
   // ---------------------------------------------------------------- wiring
+
+  dom.bookFile.addEventListener('change', function () {
+    var f = dom.bookFile.files[0];
+    bookMsg('');
+    if (f && isText(f.name)) dom.bookTitle.value = stemTitle(f.name);
+    else dom.bookTitle.value = '';
+    syncBookForm();
+  });
+  dom.bookBtn.addEventListener('click', uploadBook);
 
   dom.romFile.addEventListener('change', function () {
     dom.uploadBtn.disabled = !dom.romFile.files.length;
@@ -1105,9 +1383,15 @@
     dom.uploadBtn.textContent = 'Uploading';
     var fd = new FormData();
     fd.append('rom', f, f.name);
-    fetch('/api/upload', { method: 'POST', body: fd }).then(function () {
+    fetch('/api/upload', { method: 'POST', body: fd }).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          dom.status.textContent = 'upload failed: ' + (t || ('HTTP ' + r.status));
+          dom.status.className = 'bad';
+        });
+      }
       dom.romFile.value = '';
-      return refresh();
+      return Promise.all([refresh(), pingStatus()]);
     }).catch(function (e) {
       console.log('upload failed:', errText(e));
     }).then(function () {
@@ -1158,6 +1442,7 @@
   if (coarsePointer) dom.pad.classList.remove('hidden');
 
   pingStatus();
+  refreshBooks();
   refresh();
   setInterval(pingStatus, PING_MS);
 

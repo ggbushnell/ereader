@@ -4,6 +4,8 @@
 
 #include <functional>
 
+#include "config.h"
+
 // Feed sync.
 //
 // Walks NEWS_FEEDS in include/config.h, which holds one row per endpoint: the
@@ -72,5 +74,18 @@ String numbersStamp();
 
 bool autoSyncEnabled();
 void setAutoSync(bool on);
+
+// The paginator a BOOK feed runs through, for any plain text already on the
+// filesystem (the games server uses it for a .txt uploaded from the browser).
+// Reads UTF-8 `textFile` a chunk at a time, paginates it on every grid in
+// NEWS_VARIANT_COUNT order (normal, then large), and writes an MPG2 book to
+// BOOKS_DIR/<slug>.pgs, using `blobFile` as scratch. `pagesOut[v]` is the page
+// count of variant v. Leaves `textFile` alone and the reading position alone.
+// Needs roughly four times the text size free on the filesystem; checking
+// that is the caller's job. Feeds the task watchdog as it goes, so the caller
+// only has to make sure the watchdog window allows for the whole run.
+bool writeTextBook(const char *textFile, const char *blobFile,
+                   const String &slug, const String &title,
+                   uint32_t pagesOut[NEWS_VARIANT_COUNT], String *err);
 
 }  // namespace news_sync

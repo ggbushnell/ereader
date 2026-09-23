@@ -190,6 +190,11 @@ void wramCommit(size_t len) {
   counter++;
 }
 
+void wramInvalidate() {
+  valid = false;
+  counter = 0;
+}
+
 const uint8_t *wram() { return buf; }
 bool wramValid() { return valid; }
 uint32_t wramStamp() { return stamp; }

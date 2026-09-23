@@ -28,16 +28,32 @@
 //
 // Every metric carries one value, one foot line and one delta per time window
 // (parallel arrays, in the order of "windows"); the view shows one window at
-// a time and switches with the "right" pad. One screen per project, then one
-// more listing the notes when there are any.
+// a time and switches with the "right" pad. One screen per project, then the
+// ads screen when the feed carries one, then one more listing the notes when
+// there are any.
+//
+// The optional top level "ads" key is the paid campaign block: one screen of
+// its own, a column per channel (Apple Search Ads, Google Ads) and a row per
+// metric, so the same metric sits side by side across channels. A feed
+// without it behaves exactly as before.
+//
+//   "ads":{"name":"Tinh ads",
+//          "headline":["$41.20 for 12 installs","..","..",".."],
+//          "channels":[{"id":"asa","name":"Apple Search Ads",
+//                       "metrics":[{"l":"Spend","v":["$41.20",..],..}]},
+//                      {"id":"gads","name":"Google Ads","metrics":[..]}]}
 // Screen layout (680x920 portrait, constants in numbers_view.cpp):
 //
 //   black header band: project name (helvB24, white), "7 days  4 Sep to 10 Sep"
 //   headline line (profont22), one per window
 //   2 x 5 grid of cards, one metric each: label (profont22), accent hairline,
-//     value (fub42, or helvB24 when it carries a letter or does not fit),
+//     value (fub42, or helvB24 when it carries a letter or does not fit,
+//     with a "$" prefix or a "k"/"M" suffix in helvB24 either side of it),
 //     the foot line bottom left and the delta bottom right (7x14)
 //   status strip: "daily numbers  2/5  08:07" and the button hint
+//
+// The ads screen adds a channel name line (profont22) between the headline
+// and the grid, which starts a little lower and has slightly shorter tiles.
 
 namespace numbers_view {
 
@@ -72,6 +88,22 @@ struct Project {
   std::vector<Metric> metrics;
 };
 
+// One paid channel of the ads screen: a column of the grid.
+struct Channel {
+  String id;    // "asa"
+  String name;  // "Apple Search Ads"
+  std::vector<Metric> metrics;  // Spend, Installs, Cost/install, Taps, Impressions
+};
+
+// The ads block. `present` is false for a feed without an "ads" key, and the
+// view then behaves exactly as it did before the block existed.
+struct Ads {
+  String name;  // "Tinh ads", the header band title
+  String headline[MAX_WINDOWS];
+  std::vector<Channel> channels;  // 1 or 2, column 0 first
+  bool present = false;
+};
+
 struct Data {
   String day;        // "2026-09-10", the reporting day
   String label;      // "Thu 10 Sep"
@@ -80,13 +112,24 @@ struct Data {
   int historyDays = 0;          // length of the chart axis, 0 = no history
   std::vector<Tick> ticks;      // x axis labels for the chart window
   std::vector<Project> projects;
+  Ads ads;
   std::vector<String> notes;
 
-  // Screens to page through: one per project, plus the notes screen when
-  // there are notes. Never less than one, so an empty feed still shows a
-  // "nothing in the window" screen instead of nothing.
+  // Screens to page through: one per project, then the ads screen when the
+  // feed carries one, plus the notes screen when there are notes. Never less
+  // than one, so an empty feed still shows a "nothing in the window" screen
+  // instead of nothing.
   int screens() const;
+
+  // Index of the ads screen, or -1 when the feed has no ads block.
+  int adsScreen() const;
 };
+
+// Metrics reachable on screen `screen`: a project's own metrics, the ads
+// screen's channels flattened (channel 0 then channel 1), 0 for the notes or
+// empty screen. This is what the chart window pages through, so the
+// navigation in main.cpp asks here instead of indexing projects directly.
+int metricsOnScreen(const Data &data, int screen);
 
 // True when NUMBERS_FILE exists, so the caller can tell "never synced" from
 // "failed to parse" before spending a frame.
@@ -102,11 +145,12 @@ bool load(Data &out, String *err);
 // page carry over handled inside ui.
 void render(const Data &data, int index, int window, bool forceFull = false);
 
-// The chart window: one full screen line chart of metric `metric` of project
+// The chart window: one full screen line chart of metric `metric` of screen
 // `index` over the history axis. Value labels at the left, date ticks along
 // the bottom, a dot per day and a line between consecutive days that both
-// have a value. `index` past the projects (the notes screen) draws the
-// notes screen instead.
+// have a value. On the ads screen the metrics are flattened channel 0 then
+// channel 1 and the chart is titled "<channel>: <label>". `index` on the
+// notes screen draws the notes screen instead.
 void renderChart(const Data &data, int index, int metric, bool forceFull = false);
 
 // The status screen shown when there is nothing to draw: no file yet, or a

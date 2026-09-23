@@ -349,14 +349,16 @@ std::vector<BookEntry> list() {
     // Some FS implementations return a full path; keep only the basename.
     int slash = name.lastIndexOf('/');
     if (slash >= 0) name = name.substring(slash + 1);
+    uint32_t fileBytes = (uint32_t)entry.size();
     entry.close();
 
     if (name.endsWith(".pgs")) {
       String slug = name.substring(0, name.length() - 4);
       // The daily numbers feed is a JSON file drawn by its own view since the
       // grid version; a numbers.pgs is a leftover of the text version and is
-      // not a book any more.
-      if (slug == METRICS_SLUG) {
+      // not a book any more. A slug with a leading dot is a book upload being
+      // assembled (BOOK_UPLOAD_STAGE_SLUG), or the leftover of one that died.
+      if (slug == METRICS_SLUG || slug.startsWith(".")) {
         entry = dir.openNextFile();
         continue;
       }
@@ -365,6 +367,7 @@ std::vector<BookEntry> list() {
         BookEntry e;
         e.slug = slug;
         e.title = b.title();
+        e.fileBytes = fileBytes;
         e.variantCount = b.variantCount();
         uint8_t variant = 0;
         e.savedPage = loadPosition(slug, &variant);

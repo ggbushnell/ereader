@@ -12,6 +12,12 @@ namespace ui {
 
 void begin();
 
+// Panel rotation, 1 or 3 (both portrait, 180 degrees apart). begin() starts at
+// DISPLAY_ROTATION; main.cpp applies the stored "Flip screen" choice. The next
+// frame after a change should be a full refresh.
+void setRotation(uint8_t rotation);
+uint8_t rotation();
+
 // ------------------------------------------------------------ card geometry
 //
 // Shared by the menu (renderMenu below) and the daily numbers view

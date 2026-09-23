@@ -52,6 +52,7 @@ struct BookEntry {
   uint32_t savedPage = 0;     // zero based, in savedVariant
   uint8_t savedVariant = 0;
   uint8_t variantCount = 1;
+  uint32_t fileBytes = 0;     // size of the .pgs on the filesystem
 };
 
 class Book {

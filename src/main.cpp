@@ -138,13 +138,47 @@ void showEmptyLibrary(const String &reason) {
     lines.push_back(reason);
     lines.push_back("");
   }
-  lines.push_back("Convert a text with the host side converter in tools/,");
-  lines.push_back("drop the .pgs file into data/books/, then run:");
+  lines.push_back("To add one from a phone or a computer:");
   lines.push_back("");
+  lines.push_back("  1. Press center for the menu.");
+  lines.push_back("  2. Pick \"Books and games (WiFi)\".");
+  lines.push_back("  3. Open the address it shows and upload a");
+  lines.push_back("     .txt or .pgs book.");
+  lines.push_back("");
+  lines.push_back("WiFi setup in the same menu joins your network;");
+  lines.push_back("without one, join the reader's own WiFi.");
+  lines.push_back("");
+  lines.push_back("Or convert on a computer with tools/ and run");
   lines.push_back("    pio run -e esp32s3 -t uploadfs");
-  lines.push_back("");
-  lines.push_back("Reset the board and the first page appears here.");
   ui::renderMessage("muon reader", lines);
+}
+
+// "Flip screen": the rotation lives in NVS (NVS_NS_UI), 1 or 3, and the pad
+// turns with the picture whenever it differs from DISPLAY_ROTATION. Nothing
+// stored means DISPLAY_ROTATION, so a build that never flips is unchanged.
+uint8_t storedRotation() {
+  Preferences p;
+  if (!p.begin(NVS_NS_UI, true)) return DISPLAY_ROTATION;
+  uint8_t r = p.getUChar(NVS_KEY_UI_ROTATION, DISPLAY_ROTATION);
+  p.end();
+  return (r == 1 || r == 3) ? r : DISPLAY_ROTATION;
+}
+
+void applyRotation(uint8_t r) {
+  ui::setRotation(r);
+  input::setTurned(ui::rotation() != DISPLAY_ROTATION);
+}
+
+void flipScreen() {
+  uint8_t next = (ui::rotation() == 1) ? 3 : 1;
+  Preferences p;
+  if (p.begin(NVS_NS_UI, false)) {
+    p.putUChar(NVS_KEY_UI_ROTATION, next);
+    p.end();
+  }
+  applyRotation(next);
+  logf("flip screen: rotation %u, pad %s\n", (unsigned)next,
+       input::turned() ? "turned" : "as wired");
 }
 
 void renderCurrentPage(bool forceFull = false) {
@@ -228,6 +262,23 @@ void refreshLibrarySaved() {
   }
 }
 
+// The books and games server can add, replace and delete books, including the
+// one that is open. Rescan, and reopen the open book from its file so a
+// replaced book is not read through a stale page table; a deleted one closes.
+void reloadLibraryAfterServer() {
+  library = books::list();
+  if (book.isOpen()) {
+    String slug = book.slug();
+    if (!openBook(slug)) {
+      book.close();
+      if (!library.empty()) openBook(library[0].slug);
+    }
+  } else if (!library.empty()) {
+    openBook(library[0].slug);
+  }
+  refreshLibrarySaved();
+}
+
 // The menu is built as a list of rows carrying what to do, not just a label:
 // the book list is variable length and the text size row only exists for a
 // book with more than one variant, so hard coded indices do not survive.
@@ -242,6 +293,7 @@ enum class MenuAction {
   GAMES,
   AUTO_SYNC,
   JUMP,
+  FLIP_SCREEN,
   BUTTON_TEST,
 };
 
@@ -273,7 +325,9 @@ std::vector<MenuRow> menuRows() {
                  "/" + String((unsigned long)library[i].pageCount);
     rows.push_back(MenuRow(library[i].title, pos, MenuAction::OPEN_BOOK, (int)i));
   }
-  {
+  // The feed tiles only exist in a build with a token for their feed (see
+  // FEEDS_CONFIGURED in config.h); a public build has nowhere to sync from.
+  if (METRICS_FEED_CONFIGURED) {
     String stamp = news_sync::numbersStamp();
     rows.push_back(MenuRow(METRICS_TITLE,
                            stamp.length() ? "synced " + stamp : String("never synced"),
@@ -283,7 +337,7 @@ std::vector<MenuRow> menuRows() {
     String size = (book.fontId() == BOOK_FONT_PROFONT29) ? "Large" : "Normal";
     rows.push_back(MenuRow("Text size", size, MenuAction::TEXT_SIZE, -1));
   }
-  {
+  if (FEEDS_CONFIGURED) {
     String stamp = news_sync::lastStamp();
     rows.push_back(MenuRow("Sync feeds",
                            stamp.length() ? "synced " + stamp : String("never synced"),
@@ -296,18 +350,27 @@ std::vector<MenuRow> menuRows() {
   }
   rows.push_back(MenuRow("Check WiFi", MenuAction::WIFI_CHECK, -1));
   {
+    // The way books get onto a finished reader, so the name says so.
     size_t n = games::romCount();
-    rows.push_back(MenuRow("Games", String((unsigned long)n) + (n == 1 ? " rom" : " roms"),
+    size_t nb = library.size();
+    rows.push_back(MenuRow("Books and games (WiFi)",
+                           String((unsigned long)nb) + (nb == 1 ? " book, " : " books, ") +
+                               String((unsigned long)n) + (n == 1 ? " rom" : " roms"),
                            MenuAction::GAMES, -1));
   }
-  rows.push_back(MenuRow("Auto sync",
-                         news_sync::autoSyncEnabled() ? "on" : "off",
-                         MenuAction::AUTO_SYNC, -1));
+  if (FEEDS_CONFIGURED) {
+    rows.push_back(MenuRow("Auto sync",
+                           news_sync::autoSyncEnabled() ? "on" : "off",
+                           MenuAction::AUTO_SYNC, -1));
+  }
   rows.push_back(MenuRow("Jump to page",
                          book.isOpen() ? "page " + String((unsigned long)(currentPage + 1)) +
                                              "/" + String((unsigned long)book.pageCount())
                                        : String(""),
                          MenuAction::JUMP, -1));
+  rows.push_back(MenuRow("Flip screen",
+                         input::turned() ? "turned 180" : "as built",
+                         MenuAction::FLIP_SCREEN, -1));
   rows.push_back(MenuRow("Button test", "pad diagnostics", MenuAction::BUTTON_TEST, -1));
   return rows;
 }
@@ -395,17 +458,14 @@ void handleNumbers(Button b) {
   // last and wraps back from to the first window.
   const int windows = (int)numbersData.windows.size() + 1;
   const bool charting = numbersWindow >= windows - 1;
-  auto metricsHere = [&]() -> int {
-    if (numbersScreen >= (int)numbersData.projects.size()) return 0;
-    return (int)numbersData.projects[numbersScreen].metrics.size();
-  };
   switch (b) {
     // DOWN = next project (in the chart window, next metric, spilling into
     // the next project), the founder's "right" (BTN_LEFT) = next time
     // window, both wrapping; UP and RIGHT are the reverse moves when present,
     // never required.
     case BTN_DOWN:
-      if (charting && numbersChart + 1 < metricsHere()) {
+      if (charting && numbersChart + 1 <
+                          numbers_view::metricsOnScreen(numbersData, numbersScreen)) {
         numbersChart++;
       } else {
         numbersScreen = (numbersScreen + 1) % total;
@@ -418,7 +478,9 @@ void handleNumbers(Button b) {
         numbersChart--;
       } else {
         numbersScreen = (numbersScreen + total - 1) % total;
-        numbersChart = charting ? metricsHere() - 1 : 0;
+        numbersChart =
+            charting ? numbers_view::metricsOnScreen(numbersData, numbersScreen) - 1
+                     : 0;
         if (numbersChart < 0) numbersChart = 0;
       }
       renderNumbers();
@@ -524,8 +586,10 @@ bool runNewsSync() {
 // under test and none of them can be spent on "done".
 void runButtonTest() {
   const char *names[BTN_COUNT] = {"UP", "DOWN", "LEFT", "RIGHT", "CENTER"};
-  const int gpios[BTN_COUNT] = {PIN_BTN_UP, PIN_BTN_DOWN, PIN_BTN_LEFT,
-                                PIN_BTN_RIGHT, PIN_BTN_CENTER};
+  // With the screen flipped the pad is turned too, so each name reads the
+  // GPIO that now means that direction.
+  int gpios[BTN_COUNT];
+  for (int i = 0; i < BTN_COUNT; i++) gpios[i] = input::gpioFor((Button)i);
   std::vector<String> history;
   uint8_t lastMask = 0;
   uint32_t lastActivity = millis();
@@ -736,7 +800,12 @@ void handleMenu(Button b) {
           break;
         case MenuAction::GAMES:
           games::run();
+          reloadLibraryAfterServer();
           ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor);
+          break;
+        case MenuAction::FLIP_SCREEN:
+          flipScreen();
+          ui::renderMenu(sensorHeader(), labelsOf(menuRows()), menuCursor, true);
           break;
         case MenuAction::AUTO_SYNC:
           news_sync::setAutoSync(!news_sync::autoSyncEnabled());
@@ -872,6 +941,7 @@ void setup() {
   if (!bmeOk) logf("BME280 not found, menu will show sensor n/a\n");
 
   input::begin();
+  applyRotation(storedRotation());
 
   // The daily numbers feed used to be paginated into a book; since the grid
   // view it is a JSON file, and whatever the old version left in /books is
@@ -923,8 +993,8 @@ void setup() {
   bool guardBlocks = bootSyncDied || cameFromWdt || brownoutCausedReboot();
   if (guardBlocks) autoSyncSkipped = true;
 
-  if (news_sync::autoSyncEnabled() && !wifi_store::list().empty() &&
-      !guardBlocks) {
+  if (FEEDS_CONFIGURED && news_sync::autoSyncEnabled() &&
+      !wifi_store::list().empty() && !guardBlocks) {
     // Grace window: the page is already on glass, so give the reader a few
     // seconds to take the device before the radio comes up. A press means they
     // wanted the page, not a sync.

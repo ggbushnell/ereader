@@ -20,6 +20,20 @@ bool pendingEvent[BTN_COUNT];
 int idleLevel[BTN_COUNT];    // sampled at boot; pressed = the other level
 uint32_t lastAcceptedPress = 0;  // millis of the last press turned into an event
 bool haveAccepted = false;
+bool padTurned = false;  // see input::setTurned()
+
+// Pin index to the button it means right now. The swap is its own inverse, so
+// the same function maps a button back to its pin index.
+int logicalOf(int i) {
+  if (!padTurned) return i;
+  switch (i) {
+    case BTN_UP: return BTN_DOWN;
+    case BTN_DOWN: return BTN_UP;
+    case BTN_LEFT: return BTN_RIGHT;
+    case BTN_RIGHT: return BTN_LEFT;
+    default: return i;
+  }
+}
 
 // Interrupt side of the latch. A press edge stamps fallUs; the release edge
 // latches the button when the pin stayed active long enough to be a finger
@@ -84,7 +98,7 @@ bool takeLatched(Button &out) {
     }
     if (latched[i]) {
       latched[i] = false;
-      out = (Button)i;
+      out = (Button)logicalOf(i);
       Serial.printf("btn %d latched press\n", i);
       return true;
     }
@@ -122,7 +136,7 @@ void flush() {
 uint8_t rawMask() {
   uint8_t m = 0;
   for (int i = 0; i < BTN_COUNT; i++) {
-    if (stable[i]) m |= (uint8_t)(1 << i);
+    if (stable[i]) m |= (uint8_t)(1 << logicalOf(i));
   }
   return m;
 }
@@ -130,7 +144,7 @@ uint8_t rawMask() {
 uint8_t liveMask() {
   uint8_t m = 0;
   for (int i = 0; i < BTN_COUNT; i++) {
-    if (digitalRead(kPins[i]) != idleLevel[i]) m |= (uint8_t)(1 << i);
+    if (digitalRead(kPins[i]) != idleLevel[i]) m |= (uint8_t)(1 << logicalOf(i));
   }
   return m;
 }
@@ -178,11 +192,20 @@ bool poll(Button &out) {
   for (int i = 0; i < BTN_COUNT; i++) {
     if (pendingEvent[i]) {
       pendingEvent[i] = false;
-      out = (Button)i;
+      out = (Button)logicalOf(i);
       return true;
     }
   }
   return false;
+}
+
+void setTurned(bool turned) { padTurned = turned; }
+
+bool turned() { return padTurned; }
+
+int gpioFor(Button b) {
+  if ((int)b < 0 || (int)b >= BTN_COUNT) return -1;
+  return kPins[logicalOf((int)b)];
 }
 
 }  // namespace input

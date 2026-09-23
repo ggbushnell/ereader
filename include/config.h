@@ -44,6 +44,15 @@ static const int SCREEN_H = 920;
 // change this to 3 and reflash; nothing else in the firmware cares.
 static const uint8_t DISPLAY_ROTATION = 1;
 
+// "Flip screen" in the menu turns the picture 180 degrees at runtime (rotation
+// 1 <-> 3) for anyone running a prebuilt image who cannot edit the constant
+// above. The choice lives in NVS, so it survives reflashing and uploadfs.
+// Until it is used, DISPLAY_ROTATION is what the panel runs at. While the
+// picture is turned away from DISPLAY_ROTATION the pad is turned with it (UP
+// swaps with DOWN, LEFT with RIGHT), so "up" stays up for the reader.
+#define NVS_NS_UI "ui"
+#define NVS_KEY_UI_ROTATION "rot"
+
 // Status strip at the bottom of every screen. Same proportions as the earlier
 // landscape build: the rule sits 24 px above the bottom edge and the status
 // baseline 8 px above that edge, so 920 - 24 = 896 and 920 - 8 = 912.
@@ -193,6 +202,30 @@ static const uint32_t GAMES_AUX_FULL_MS = 60000;
 static const uint32_t GAMES_MAX_AUX_BYTES = 3072UL * 1024UL;
 static const size_t GAMES_WRAM_BYTES = 8192;
 
+// Books over WiFi. The same server takes a plain text book (.txt, UTF-8) or a
+// ready made book (.pgs from tools/pdf2book.py or tools/txt2book.py) from the
+// page, and deletes books. A .txt is streamed to BOOK_UPLOAD_TMP_FILE and then
+// paginated on the device with the news brief's paginator (src/text_paginate.*)
+// on both text grids, so it becomes a dual size MPG2 book like a synced brief.
+// Free space is checked before the first byte is written and again as bytes
+// arrive, because a full LittleFS panics instead of failing a write (see
+// news_sync.cpp). Pagination needs the raw text, the page blobs of both grids
+// and the finished book on flash at the same time, so a .txt needs about
+// BOOK_TXT_SPACE_FACTOR times its own size; a .pgs needs its own size. Either
+// way BOOK_UPLOAD_MIN_FREE_BYTES must still be free afterwards.
+#define BOOK_UPLOAD_TMP_FILE "/book.tmp"     // raw upload, deleted afterwards
+#define BOOK_UPLOAD_BLOB_FILE "/book.blob"   // page blobs while assembling
+// Where a new book is assembled and checked before it replaces anything. The
+// leading dot keeps it out of the upload name space (a slug never starts with
+// a dot) and books::list() skips it.
+#define BOOK_UPLOAD_STAGE_SLUG ".upload"
+static const uint32_t BOOK_UPLOAD_MIN_FREE_BYTES = 256UL * 1024UL;
+static const uint32_t BOOK_TXT_SPACE_FACTOR = 5;
+static const uint32_t BOOK_MAX_TXT_BYTES = 1024UL * 1024UL;
+static const uint32_t BOOK_MAX_PGS_BYTES = 6144UL * 1024UL;
+static const int BOOK_SLUG_MAX = 24;  // same as tools/pdf2book.py SLUG_MAX
+static const int BOOK_TITLE_MAX = 60;
+
 // Sync endpoints. NEWS_TOKEN and METRICS_TOKEN are the shared secrets in the
 // query strings; fill them in before the first sync, they ship as placeholders.
 // include/secrets.h defines NEWS_TOKEN and METRICS_TOKEN; it is gitignored,
@@ -209,6 +242,19 @@ static const size_t GAMES_WRAM_BYTES = 8192;
 #ifndef METRICS_TOKEN
 #define METRICS_TOKEN "CHANGE_ME"
 #endif
+// A build with a placeholder token has no feed to talk to, so its menu leaves
+// out everything that only exists for the feeds: "Sync feeds" and "Auto sync"
+// unless at least one token is set, "Daily numbers" unless METRICS_TOKEN is
+// set. Decided at compile time; a build with include/secrets.h is unchanged.
+constexpr bool configStrEq(const char *a, const char *b) {
+  return *a == *b && (*a == '\0' || configStrEq(a + 1, b + 1));
+}
+static constexpr bool NEWS_FEED_CONFIGURED = !configStrEq(NEWS_TOKEN, "CHANGE_ME");
+static constexpr bool METRICS_FEED_CONFIGURED =
+    !configStrEq(METRICS_TOKEN, "CHANGE_ME");
+static constexpr bool FEEDS_CONFIGURED =
+    NEWS_FEED_CONFIGURED || METRICS_FEED_CONFIGURED;
+
 #define NEWS_URL "https://api.muonsortes.com/brief/latest.txt?k=" NEWS_TOKEN
 #define METRICS_URL \
   "https://api.muonsortes.com/metrics/ereader.json?k=" METRICS_TOKEN
@@ -216,6 +262,11 @@ static const size_t GAMES_WRAM_BYTES = 8192;
 // Body ceiling. The brief is streamed to a LittleFS temp file, never held in
 // RAM, but a runaway response should still not fill the books partition.
 static const uint32_t NEWS_MAX_BYTES = 200UL * 1024UL;
+// Free space a sync insists on before it downloads anything: the raw brief,
+// its paginated variants and the numbers JSON together, with headroom for
+// littlefs metadata. Below this the sync reports "storage full" instead of
+// writing, because a full filesystem panics inside littlefs (see news_sync.cpp).
+static const uint32_t NEWS_MIN_FREE_BYTES = 640UL * 1024UL;
 static const uint32_t NEWS_HTTP_TIMEOUT_MS = 20000;
 
 // The task watchdog window while a sync is running. HTTPClient::GET() blocks
@@ -261,15 +312,17 @@ struct NewsFeed {
   const char *stampKey;  // NVS key holding "YYYY-MM-DD HH:MM" of the last sync
   const char *tmpFile;   // raw body while it downloads
   const char *blobFile;  // page blobs while a book is assembled (BOOK only)
+  bool configured;       // token set at compile time; an unset feed is skipped
 };
 
 static const uint8_t NEWS_FEED_COUNT = 2;
 
 static const NewsFeed NEWS_FEEDS[NEWS_FEED_COUNT] = {
     {NEWS_FEED_BOOK, NEWS_SLUG, NEWS_TITLE, NEWS_URL, NVS_KEY_NEWS_ETAG,
-     NVS_KEY_NEWS_STAMP, NEWS_TMP_FILE, NEWS_BLOB_FILE},
+     NVS_KEY_NEWS_STAMP, NEWS_TMP_FILE, NEWS_BLOB_FILE, NEWS_FEED_CONFIGURED},
     {NEWS_FEED_NUMBERS, METRICS_SLUG, METRICS_TITLE, METRICS_URL,
-     NVS_KEY_METRICS_ETAG, NVS_KEY_METRICS_STAMP, METRICS_TMP_FILE, nullptr},
+     NVS_KEY_METRICS_ETAG, NVS_KEY_METRICS_STAMP, METRICS_TMP_FILE, nullptr,
+     METRICS_FEED_CONFIGURED},
 };
 
 // The device paginates a synced brief on both grids and writes an MPG2 book,

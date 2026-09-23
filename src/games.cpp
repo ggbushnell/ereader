@@ -9,10 +9,12 @@
 
 #include <vector>
 
+#include "books.h"
 #include "config.h"
 #include "gbgfx.h"
 #include "input.h"
 #include "net.h"
+#include "news_sync.h"
 #include "pack.h"
 #include "pokemon_state.h"
 #include "pokemon_views.h"
@@ -52,6 +54,23 @@ String savePath;
 bool saveFailed = false;
 size_t saveBytes = 0;
 bool uploadIsAux = false;
+
+// Free bytes on the filesystem when the ROM upload in flight started. The
+// upload stops before it would leave less than BOOK_UPLOAD_MIN_FREE_BYTES,
+// because a full LittleFS panics rather than failing the write.
+size_t uploadFreeAtStart = 0;
+
+// Book upload in flight (POST /api/books/upload, multipart). A .txt lands in
+// BOOK_UPLOAD_TMP_FILE and is paginated by the completion handler; a .pgs lands
+// under BOOK_UPLOAD_STAGE_SLUG and is parsed before it replaces anything.
+fs::File bookFile;
+String bookSlug;
+String bookStem;
+bool bookIsText = false;
+bool bookFailed = false;
+String bookError;
+uint32_t bookBytes = 0;
+uint32_t bookBudget = 0;
 
 // Raw work RAM body in flight (POST /api/wram). Accumulated into the decoder's
 // own buffer and only committed once the whole 8 KB arrived.
@@ -168,6 +187,119 @@ String savePathFor(const String &file) {
   return String(GAMES_SAVE_DIR "/") + file;
 }
 
+size_t fsFreeBytes() {
+  size_t total = LittleFS.totalBytes();
+  size_t used = LittleFS.usedBytes();
+  return total > used ? total - used : 0;
+}
+
+// ------------------------------------------------------------ book names
+
+// Basename of whatever the browser sent, lowercased.
+String baseName(const String &raw) {
+  String base = raw;
+  int slash = base.lastIndexOf('/');
+  if (slash >= 0) base = base.substring(slash + 1);
+  slash = base.lastIndexOf('\\');
+  if (slash >= 0) base = base.substring(slash + 1);
+  return base;
+}
+
+// The host converters' slug rule (tools/pdf2book.py slugify): lowercase, every
+// run of characters outside [a-z0-9] becomes one '_', no '_' at either end,
+// cut to BOOK_SLUG_MAX. The feed slugs are taken, so a book called "news"
+// becomes "news_book" instead of being overwritten by the next sync.
+String slugify(const String &stem) {
+  String lower = stem;
+  lower.toLowerCase();
+  String out;
+  bool pendingSep = false;
+  for (size_t i = 0; i < lower.length(); i++) {
+    char c = lower[i];
+    bool keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    if (!keep) {
+      pendingSep = out.length() > 0;
+      continue;
+    }
+    if (pendingSep) out += '_';
+    pendingSep = false;
+    out += c;
+  }
+  if ((int)out.length() > BOOK_SLUG_MAX) out = out.substring(0, BOOK_SLUG_MAX);
+  while (out.endsWith("_")) out.remove(out.length() - 1);
+  if (!out.length()) out = "book";
+  if (out == NEWS_SLUG || out == METRICS_SLUG) out += "_book";
+  return out;
+}
+
+// A slug as it arrives in a delete request. Books put on the filesystem with
+// uploadfs follow the host slug rule, but be lenient and accept anything the
+// ROM name rule accepts, minus the leading dot of a staged upload.
+bool validBookSlug(const String &slug) {
+  if (!slug.length() || slug.length() > 64 || slug[0] == '.') return false;
+  for (size_t i = 0; i < slug.length(); i++) {
+    if (!safeChar(slug[i])) return false;
+  }
+  return true;
+}
+
+String bookPathFor(const String &slug) { return String(BOOKS_DIR "/") + slug + ".pgs"; }
+String bookPosFor(const String &slug) { return String(BOOKS_DIR "/") + slug + ".pos"; }
+
+// A title for the library: control characters dropped, runs of spaces folded,
+// cut to BOOK_TITLE_MAX characters (UTF-8 aware, never splits a character).
+String cleanTitle(const String &raw) {
+  String out;
+  bool space = false;
+  int chars = 0;
+  for (size_t i = 0; i < raw.length(); i++) {
+    uint8_t c = (uint8_t)raw[i];
+    if (c < 0x20 || c == 0x7F || c == ' ') {
+      space = out.length() > 0;
+      continue;
+    }
+    bool lead = (c & 0xC0) != 0x80;
+    if (lead) {
+      if (chars >= BOOK_TITLE_MAX) break;
+      if (space) {
+        out += ' ';
+        chars++;
+      }
+      space = false;
+      chars++;
+    }
+    out += (char)c;
+  }
+  return out;
+}
+
+// Upload stem to a readable title: "alice_in_wonderland" -> "alice in wonderland".
+String titleFromStem(const String &stem) {
+  String t = stem;
+  t.replace('_', ' ');
+  t.replace('-', ' ');
+  return cleanTitle(t);
+}
+
+String jsonEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 2);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if ((uint8_t)c < 0x20) {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "\\u%04x", (unsigned)(uint8_t)c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------ responses
 
 void noStore() {
@@ -206,6 +338,16 @@ void redirectHome() {
 
 // ------------------------------------------------------------ handlers
 
+// A zero length save file counts as absent: posting an empty body is how a
+// bad state gets retired without deleting the ROM.
+bool saveHasBytes(const String &file) {
+  fs::File f = LittleFS.open(savePathFor(file), "r");
+  if (!f) return false;
+  bool has = f.size() > 0;
+  f.close();
+  return has;
+}
+
 void handleRoms() {
   touch();
   String out = "[";
@@ -221,9 +363,9 @@ void handleRoms() {
       if (!first) out += ",";
       first = false;
       out += "{\"name\":\"" + name + "\",\"size\":" + String((unsigned long)f.size());
-      out += ",\"sav\":" + String(LittleFS.exists(savePathFor(name + ".sav")) ? "true" : "false");
-      out += ",\"state\":" + String(LittleFS.exists(savePathFor(name + ".state")) ? "true" : "false");
-      out += ",\"auto\":" + String(LittleFS.exists(savePathFor(name + ".auto")) ? "true" : "false");
+      out += ",\"sav\":" + String(saveHasBytes(name + ".sav") ? "true" : "false");
+      out += ",\"state\":" + String(saveHasBytes(name + ".state") ? "true" : "false");
+      out += ",\"auto\":" + String(saveHasBytes(name + ".auto") ? "true" : "false");
       out += "}";
     }
   }
@@ -263,6 +405,7 @@ void handleUploadData() {
       return;
     }
     uploadIsAux = packExtension(uploadName);
+    uploadFreeAtStart = fsFreeBytes();
     // A pack is read while the screen draws, so it cannot be rewritten under
     // the open File.
     if (uploadIsAux) {
@@ -285,6 +428,16 @@ void handleUploadData() {
     if (up.totalSize + up.currentSize > cap) {
       uploadFailed = true;
       uploadError = uploadIsAux ? "pack larger than 3 MB" : "rom larger than 2 MB";
+      uploadFile.close();
+      LittleFS.remove(romPath(uploadName) + ".tmp");
+      return;
+    }
+    // A full filesystem panics inside littlefs instead of failing the write,
+    // so stop while there is still room to spare.
+    if (up.totalSize + up.currentSize + BOOK_UPLOAD_MIN_FREE_BYTES >
+        uploadFreeAtStart) {
+      uploadFailed = true;
+      uploadError = "not enough free space on the reader";
       uploadFile.close();
       LittleFS.remove(romPath(uploadName) + ".tmp");
       return;
@@ -504,12 +657,217 @@ void handleWramGet() {
   server->sendContent((const char *)pokemon::wram(), GAMES_WRAM_BYTES);
 }
 
+// ------------------------------------------------------------ books
+
+void handleBooks() {
+  touch();
+  std::vector<BookEntry> list = books::list();
+  String out = "[";
+  for (size_t i = 0; i < list.size(); i++) {
+    if (i) out += ",";
+    out += "{\"slug\":\"" + jsonEscape(list[i].slug) + "\"";
+    out += ",\"title\":\"" + jsonEscape(list[i].title) + "\"";
+    out += ",\"pages\":" + String((unsigned long)list[i].pageCount);
+    out += ",\"page\":" + String((unsigned long)list[i].savedPage);
+    out += ",\"sizes\":" + String((unsigned)list[i].variantCount);
+    out += ",\"size\":" + String((unsigned long)list[i].fileBytes) + "}";
+  }
+  out += "]";
+  sendJson(200, out);
+}
+
+void failBook(const String &why) {
+  bookFailed = true;
+  bookError = why;
+  if (bookFile) bookFile.close();
+  LittleFS.remove(BOOK_UPLOAD_TMP_FILE);
+  LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
+}
+
+String kb(uint32_t bytes) { return String((unsigned long)(bytes / 1024)) + " KB"; }
+
+// Multipart book upload. The page passes ?size=<bytes> so a book that cannot
+// fit is refused before a single byte is written; the byte count is checked
+// again as the body arrives, since the query is only a claim.
+void handleBookUploadData() {
+  HTTPUpload &up = server->upload();
+  if (up.status == UPLOAD_FILE_START) {
+    touch();
+    bookFailed = false;
+    bookError = "";
+    bookBytes = 0;
+    String base = baseName(up.filename);
+    String lower = base;
+    lower.toLowerCase();
+    bookIsText = lower.endsWith(".txt");
+    if (!bookIsText && !lower.endsWith(".pgs")) {
+      failBook("only .txt and .pgs books");
+      return;
+    }
+    bookStem = base.substring(0, base.length() - 4);
+    bookSlug = slugify(bookStem);
+
+    uint32_t freeBytes = (uint32_t)fsFreeBytes();
+    uint32_t room = freeBytes > BOOK_UPLOAD_MIN_FREE_BYTES
+                        ? freeBytes - BOOK_UPLOAD_MIN_FREE_BYTES
+                        : 0;
+    uint32_t cap = bookIsText ? BOOK_MAX_TXT_BYTES : BOOK_MAX_PGS_BYTES;
+    bookBudget = bookIsText ? room / BOOK_TXT_SPACE_FACTOR : room;
+    if (bookBudget > cap) bookBudget = cap;
+    uint32_t claimed = (uint32_t)server->arg("size").toInt();
+    Serial.printf("books: upload %s -> %s (%s, %lu bytes claimed, budget %lu, "
+                  "free %lu)\n",
+                  up.filename.c_str(), bookSlug.c_str(), bookIsText ? "txt" : "pgs",
+                  (unsigned long)claimed, (unsigned long)bookBudget,
+                  (unsigned long)freeBytes);
+    if (claimed > cap) {
+      failBook(bookIsText ? "a .txt book can be at most " + kb(cap)
+                          : "a .pgs book can be at most " + kb(cap));
+      return;
+    }
+    if (claimed > bookBudget || bookBudget == 0) {
+      failBook("not enough free space: " + kb(freeBytes) + " free, this book needs about " +
+               kb((bookIsText ? claimed * BOOK_TXT_SPACE_FACTOR : claimed) +
+                  BOOK_UPLOAD_MIN_FREE_BYTES));
+      return;
+    }
+    LittleFS.mkdir(BOOKS_DIR);
+    LittleFS.remove(BOOK_UPLOAD_TMP_FILE);
+    LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
+    bookFile = LittleFS.open(bookIsText ? String(BOOK_UPLOAD_TMP_FILE)
+                                        : bookPathFor(BOOK_UPLOAD_STAGE_SLUG),
+                             "w");
+    if (!bookFile) failBook("could not open file");
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (bookFailed || !bookFile) return;
+    if (bookBytes + up.currentSize > bookBudget) {
+      failBook("not enough free space for this book");
+      return;
+    }
+    if (bookFile.write(up.buf, up.currentSize) != up.currentSize) {
+      failBook("write failed");
+      return;
+    }
+    bookBytes += up.currentSize;
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (bookFailed) return;
+    bookFile.close();
+    if (!bookBytes) failBook("empty file");
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    failBook("upload aborted");
+  }
+}
+
+void sendBookError(const String &why) {
+  Serial.printf("books: upload failed: %s\n", why.c_str());
+  sendJson(400, "{\"ok\":false,\"error\":\"" + jsonEscape(why) + "\"}");
+}
+
+// Moves the staged book over /books/<slug>.pgs. The old reading position
+// points into a book that is gone, so it goes too, and the new book opens at
+// page 1 in the normal text size.
+bool commitStagedBook(const String &slug) {
+  LittleFS.remove(bookPathFor(slug));
+  LittleFS.remove(bookPosFor(slug));
+  return LittleFS.rename(bookPathFor(BOOK_UPLOAD_STAGE_SLUG), bookPathFor(slug));
+}
+
+void handleBookUploadDone() {
+  if (bookFailed) {
+    sendBookError(bookError);
+    return;
+  }
+  if (!bookBytes) {
+    sendBookError("no file in the request");
+    return;
+  }
+
+  String title;
+  uint32_t pages = 0;
+  if (bookIsText) {
+    title = cleanTitle(server->arg("title"));
+    if (!title.length()) title = titleFromStem(bookStem);
+    {
+      std::vector<String> lines;
+      lines.push_back("Adding a book");
+      lines.push_back("");
+      lines.push_back(title);
+      lines.push_back("");
+      lines.push_back("Paginating " + kb(bookBytes) + " of text ...");
+      ui::renderStatusScreen("books", lines);
+    }
+    uint32_t t0 = millis();
+    uint32_t variantPages[NEWS_VARIANT_COUNT] = {0};
+    String err;
+    bool ok = news_sync::writeTextBook(BOOK_UPLOAD_TMP_FILE, BOOK_UPLOAD_BLOB_FILE,
+                                       String(BOOK_UPLOAD_STAGE_SLUG), title,
+                                       variantPages, &err);
+    LittleFS.remove(BOOK_UPLOAD_TMP_FILE);
+    if (!ok) {
+      LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
+      sendBookError("could not paginate: " + err);
+      return;
+    }
+    pages = variantPages[0];
+    Serial.printf("books: paginated %s in %lu ms, %lu + %lu pages\n",
+                  bookSlug.c_str(), (unsigned long)(millis() - t0),
+                  (unsigned long)variantPages[0],
+                  (unsigned long)(NEWS_VARIANT_COUNT > 1 ? variantPages[1] : 0));
+  }
+
+  // Whatever was written, it has to open before it replaces anything.
+  {
+    Book check;
+    if (!check.open(BOOK_UPLOAD_STAGE_SLUG)) {
+      String why = check.errorText();
+      LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
+      sendBookError(bookIsText ? "book did not verify: " + why
+                               : "not a valid .pgs book: " + why);
+      return;
+    }
+    if (!bookIsText) {
+      title = check.title();
+      pages = check.pageCount();
+    }
+  }
+  if (!commitStagedBook(bookSlug)) {
+    LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
+    sendBookError("rename failed");
+    return;
+  }
+  Serial.printf("books: stored %s \"%s\", %lu pages\n", bookSlug.c_str(),
+                title.c_str(), (unsigned long)pages);
+  touch();
+  sendJson(200, "{\"ok\":true,\"slug\":\"" + jsonEscape(bookSlug) +
+                    "\",\"title\":\"" + jsonEscape(title) +
+                    "\",\"pages\":" + String((unsigned long)pages) + "}");
+}
+
+void handleBookDelete() {
+  touch();
+  String slug = server->arg("slug");
+  if (!validBookSlug(slug)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"bad name\"}");
+    return;
+  }
+  bool had = LittleFS.exists(bookPathFor(slug));
+  LittleFS.remove(bookPathFor(slug));
+  LittleFS.remove(bookPosFor(slug));
+  Serial.printf("books: deleted %s\n", slug.c_str());
+  sendJson(had ? 200 : 404, had ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"no such book\"}");
+}
+
 void handlePing() {
   touch();
   size_t total = LittleFS.totalBytes();
   size_t used = LittleFS.usedBytes();
   size_t freeBytes = total > used ? total - used : 0;
   sendJson(200, "{\"ok\":true,\"free\":" + String((unsigned long)freeBytes) +
+                    ",\"total\":" + String((unsigned long)total) +
+                    ",\"reserve\":" + String((unsigned long)BOOK_UPLOAD_MIN_FREE_BYTES) +
+                    ",\"txtFactor\":" + String((unsigned long)BOOK_TXT_SPACE_FACTOR) +
+                    ",\"txtMax\":" + String((unsigned long)BOOK_MAX_TXT_BYTES) +
+                    ",\"books\":" + String((unsigned long)games::bookCount()) +
                     ",\"uptime\":" + String((unsigned long)((millis() - startMs) / 1000)) +
                     ",\"roms\":" + String((unsigned long)games::romCount()) +
                     ",\"pack\":" + String(pack::isOpen() ? "true" : "false") +
@@ -534,7 +892,7 @@ String idleText() {
 
 void drawScreen() {
   std::vector<String> lines;
-  lines.push_back("Games server");
+  lines.push_back("Books and games over WiFi");
   lines.push_back("");
   if (stationSsid.length()) {
     lines.push_back("On " + stationSsid + " open");
@@ -548,8 +906,13 @@ void drawScreen() {
   lines.push_back("  password  " GAMES_AP_PASSWORD);
   lines.push_back("  http://" GAMES_AP_IP_TEXT "/");
   lines.push_back("");
-  lines.push_back(String((unsigned long)games::romCount()) + " roms, " +
-                  String((unsigned long)requests) + " requests, idle " +
+  lines.push_back("On that page: add books (.txt or .pgs),");
+  lines.push_back("delete books, and upload and play games.");
+  lines.push_back("");
+  lines.push_back(String((unsigned long)games::bookCount()) + " books, " +
+                  String((unsigned long)games::romCount()) + " roms, " +
+                  String((unsigned long)(fsFreeBytes() / 1024)) + " KB free");
+  lines.push_back(String((unsigned long)requests) + " requests, idle " +
                   idleText());
   lines.push_back("");
   lines.push_back("Press center to exit.");
@@ -582,6 +945,23 @@ size_t romCount() {
   return n;
 }
 
+size_t bookCount() {
+  size_t n = 0;
+  fs::File dir = LittleFS.open(BOOKS_DIR, "r");
+  if (!dir || !dir.isDirectory()) return 0;
+  for (fs::File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    if (f.isDirectory()) continue;
+    String name = f.name();
+    int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    if (name.endsWith(".pgs") && !name.startsWith(".") &&
+        name != METRICS_SLUG ".pgs") {
+      n++;
+    }
+  }
+  return n;
+}
+
 void run() {
   WdtWindow wdt;
   requests = 0;
@@ -592,7 +972,7 @@ void run() {
 
   {
     std::vector<String> lines;
-    lines.push_back("Games server");
+    lines.push_back("Books and games over WiFi");
     lines.push_back("");
     lines.push_back(wifi_store::list().empty() ? "No stored network, AP only ..."
                                                : "Joining WiFi ...");
@@ -603,12 +983,19 @@ void run() {
   LittleFS.mkdir(GAMES_ROM_DIR);
   LittleFS.mkdir(GAMES_SAVE_DIR);
   LittleFS.mkdir(GAMES_AUX_DIR);
+  LittleFS.mkdir(BOOKS_DIR);
+  // Leftovers of a book upload that died with the reader (power pulled mid
+  // pagination): nothing refers to them, and they can be megabytes.
+  LittleFS.remove(BOOK_UPLOAD_TMP_FILE);
+  LittleFS.remove(BOOK_UPLOAD_BLOB_FILE);
+  LittleFS.remove(bookPathFor(BOOK_UPLOAD_STAGE_SLUG));
 
   auxPage = 0;
   auxTerrain = false;
   shownSnapshot = 0;
   gbgfx::reset();
   pokemon_views::reset();
+  pokemon::wramInvalidate();
   pack::open();   // stays open for the life of the server
 
   WiFi.persistent(false);
@@ -654,6 +1041,10 @@ void run() {
   server->on("/api/ping", HTTP_GET, handlePing);
   server->on("/api/upload", HTTP_POST, handleUploadDone, handleUploadData);
   server->on("/api/delete", HTTP_POST, handleDelete);
+  server->on("/api/books", HTTP_GET, handleBooks);
+  server->on("/api/books/upload", HTTP_POST, handleBookUploadDone,
+             handleBookUploadData);
+  server->on("/api/books/delete", HTTP_POST, handleBookDelete);
   server->on(UriBraces("/roms/{}"), HTTP_GET, handleRom);
   server->on(UriBraces("/saves/{}"), HTTP_GET, handleSaveGet);
   server->on(UriBraces("/saves/{}"), HTTP_POST, handleSaveDone, handleSaveData);

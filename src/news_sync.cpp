@@ -15,6 +15,7 @@
 #include "text_paginate.h"
 #include "wifi_store.h"
 
+
 namespace {
 
 // Anything beyond this is not a feed, it is a runaway response. The page
@@ -296,27 +297,25 @@ bool paginateVariant(const VariantSpec &spec, const char *tmpFile,
     if (meta[i].length > 0) anyText = true;
   }
   if (!anyText) {
-    *err = "empty feed";
+    *err = "no text";
     return false;
   }
   return true;
 }
 
-// Paginates the feed's temp file on every grid and writes /books/<slug>.pgs as
-// an MPG2 book, so the "Text size" menu item works on a synced feed like on a
-// host built dual size book. Page blobs go to a second temp file first, because the MPG2
+// Paginates the text file on every grid and writes BOOKS_DIR/<slug>.pgs as an
+// MPG2 book, so the "Text size" menu item works on it like on a host built
+// dual size book. Page blobs go to a second temp file first, because the MPG2
 // page tables sit ahead of the blob region and their size is only known once
-// every page of every variant exists.
-//
-// `pagesOut` reports the page count of NEWS_DEFAULT_VARIANT, which is the
-// variant a synced feed opens in.
-bool paginateToBook(const NewsFeed &feed, const String &title,
-                    uint32_t *pagesOut, String *err) {
+// every page of every variant exists. Public as news_sync::writeTextBook().
+bool writeTextBookImpl(const char *textFile, const char *blobFile,
+                       const String &slug, const String &title,
+                       uint32_t *pagesOut, String *err) {
   // A filesystem that has never had books uploaded to it has no /books, and
   // LittleFS will not create a parent directory on open().
   LittleFS.mkdir(BOOKS_DIR);
-  LittleFS.remove(feed.blobFile);
-  fs::File blobs = LittleFS.open(feed.blobFile, "w");
+  LittleFS.remove(blobFile);
+  fs::File blobs = LittleFS.open(blobFile, "w");
   if (!blobs) {
     *err = "blob open";
     return false;
@@ -326,9 +325,9 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
   // written below walk the tables in the same order, so the two agree.
   std::vector<PageMeta> meta[NEWS_VARIANT_COUNT];
   for (uint8_t v = 0; v < NEWS_VARIANT_COUNT; v++) {
-    if (!paginateVariant(kVariants[v], feed.tmpFile, blobs, meta[v], err)) {
+    if (!paginateVariant(kVariants[v], textFile, blobs, meta[v], err)) {
       blobs.close();
-      LittleFS.remove(feed.blobFile);
+      LittleFS.remove(blobFile);
       return false;
     }
   }
@@ -343,9 +342,9 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
     headerLen += 1 + 4 + 12 * (uint32_t)meta[v].size();
   }
 
-  fs::File out = LittleFS.open(bookPath(feed.slug).c_str(), "w");
+  fs::File out = LittleFS.open(bookPath(slug.c_str()).c_str(), "w");
   if (!out) {
-    LittleFS.remove(feed.blobFile);
+    LittleFS.remove(blobFile);
     *err = "book open";
     return false;
   }
@@ -379,7 +378,7 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
   }
 
   uint8_t buf[512];
-  fs::File blobIn = LittleFS.open(feed.blobFile, "r");
+  fs::File blobIn = LittleFS.open(blobFile, "r");
   if (!blobIn) {
     out.close();
     *err = "blob reopen";
@@ -391,7 +390,7 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
     if ((int)out.write(buf, (size_t)got) != got) {
       blobIn.close();
       out.close();
-      LittleFS.remove(feed.blobFile);
+      LittleFS.remove(blobFile);
       *err = "book write";
       return false;
     }
@@ -399,7 +398,23 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
   }
   blobIn.close();
   out.close();
-  LittleFS.remove(feed.blobFile);
+  LittleFS.remove(blobFile);
+
+  for (uint8_t v = 0; v < NEWS_VARIANT_COUNT; v++) {
+    pagesOut[v] = (uint32_t)meta[v].size();
+  }
+  return true;
+}
+
+// The feed's temp file to /books/<slug>.pgs. `pagesOut` reports the page count
+// of NEWS_DEFAULT_VARIANT, which is the variant a synced feed opens in.
+bool paginateToBook(const NewsFeed &feed, const String &title,
+                    uint32_t *pagesOut, String *err) {
+  uint32_t pages[NEWS_VARIANT_COUNT] = {0};
+  if (!writeTextBookImpl(feed.tmpFile, feed.blobFile, String(feed.slug), title,
+                         pages, err)) {
+    return false;
+  }
 
   // A fresh feed opens at page 1: the old position points into text that no
   // longer exists. Write the position rather than deleting it, because that is
@@ -408,7 +423,7 @@ bool paginateToBook(const NewsFeed &feed, const String &title,
   LittleFS.remove(posPath(feed.slug).c_str());
   books::savePosition(String(feed.slug), 0, NEWS_DEFAULT_VARIANT);
 
-  *pagesOut = (uint32_t)meta[NEWS_DEFAULT_VARIANT].size();
+  *pagesOut = pages[NEWS_DEFAULT_VARIANT];
   return true;
 }
 
@@ -451,6 +466,12 @@ int doRequest(HTTPClient &http, WiFiClientSecure &client, bool insecure,
 }  // namespace
 
 namespace news_sync {
+
+bool writeTextBook(const char *textFile, const char *blobFile,
+                   const String &slug, const String &title,
+                   uint32_t pagesOut[NEWS_VARIANT_COUNT], String *err) {
+  return writeTextBookImpl(textFile, blobFile, slug, title, pagesOut, err);
+}
 
 String lastStamp() { return prefGetString(NVS_KEY_NEWS_STAMP); }
 
@@ -673,6 +694,25 @@ Outcome sync(Progress progress) {
     return outcome;
   }
 
+  // A full filesystem must be caught here: the bundled littlefs (2.9.x, via
+  // esp_littlefs 1.14.1) divides by cfg->block_count inside its own "No more
+  // free space" error path, and esp_littlefs mounts with that field at zero
+  // (block count comes from the superblock), so running out of space during
+  // a write panics the reader instead of returning an error. Seen 2026-09-16
+  // with the partition 100% full of ROMs.
+  {
+    size_t total = LittleFS.totalBytes();
+    size_t used = LittleFS.usedBytes();
+    size_t freeBytes = total > used ? total - used : 0;
+    if (freeBytes < NEWS_MIN_FREE_BYTES) {
+      wifi_off();
+      outcome.result = Result::WRITE_FAILED;
+      outcome.message = "storage full, " + String((unsigned long)(freeBytes / 1024)) +
+                        "k free. Delete a game.";
+      return outcome;
+    }
+  }
+
   // TLS needs a plausible clock or every certificate reads as "not yet valid".
   net_time_sync();
 
@@ -683,6 +723,8 @@ Outcome sync(Progress progress) {
 
   for (uint8_t i = 0; i < NEWS_FEED_COUNT; i++) {
     const NewsFeed &feed = NEWS_FEEDS[i];
+    // A placeholder token would only earn a 401; leave the feed out.
+    if (!feed.configured) continue;
     Outcome one = syncFeed(feed, progress);
     if (one.result == Result::OK) {
       downloaded = true;

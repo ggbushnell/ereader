@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="color-scheme" content="dark">
-<title>Reader Games</title>
+<title>Reader: books and games</title>
 <style>
 /* Everything is inline on purpose: the device serves exactly four files and
    must never depend on the internet being reachable. */
@@ -70,7 +70,28 @@ h1 { font-size: 19px; margin: 6px 0 2px; letter-spacing: .02em; }
 .rom .meta { flex: 1 1 auto; min-width: 0; }
 .rom .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rom .sub { font-size: 12px; color: var(--dim); }
-#empty { color: var(--dim); text-align: center; padding: 30px 0; }
+#empty, #bookEmpty { color: var(--dim); text-align: center; padding: 20px 0; }
+h2 { font-size: 15px; margin: 22px 0 8px; color: var(--dim); font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; }
+#bookBox {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px; margin-bottom: 12px;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+#bookBox input[type=file] { flex: 1 1 180px; min-width: 0; font-size: 13px; color: var(--dim); }
+#bookTitle {
+  flex: 1 1 100%; min-width: 0; font: inherit; color: var(--ink);
+  background: #262b34; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+#bookTitle:disabled { opacity: .45; }
+#bookMsg { flex: 1 1 100%; font-size: 12.5px; color: var(--dim); min-height: 1em; }
+#bookMsg.bad { color: var(--warn); }
+#bookMsg.good { color: var(--accent); }
+.hint { font-size: 12.5px; color: var(--dim); margin: -4px 0 12px; }
+#space { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden;
+  margin: -8px 0 16px; }
+#spaceUsed { height: 100%; width: 0; background: var(--accent); }
+#spaceUsed.bad { background: var(--warn); }
 
 /* ---------- player ---------- */
 #player { position: fixed; inset: 0; display: flex; flex-direction: column; background: #000; }
@@ -168,16 +189,31 @@ h1 { font-size: 19px; margin: 6px 0 2px; letter-spacing: .02em; }
 <body>
 
 <div id="library">
-  <h1>Reader Games</h1>
+  <h1>Reader</h1>
   <div id="status">checking reader...</div>
+  <div id="space"><div id="spaceUsed"></div></div>
 
+  <h2>Books</h2>
+  <div id="bookBox">
+    <input type="file" id="bookFile" accept=".txt,.pgs,text/plain">
+    <button class="btn primary" id="bookBtn" disabled>Add book</button>
+    <input type="text" id="bookTitle" maxlength="60" placeholder="Title (for a .txt book)" disabled>
+    <div id="bookMsg"></div>
+  </div>
+  <div class="hint">A .txt book is laid out into pages on the reader, which takes a
+    few seconds per 100 KB. Use UTF-8 or plain ASCII text. A .pgs book from the
+    converter in tools/ is stored as is.</div>
+  <div id="bookList"></div>
+  <div id="bookEmpty" class="hidden">No books on the reader yet.</div>
+
+  <h2>Games</h2>
   <div id="uploadBox">
     <input type="file" id="romFile" accept=".nes,.gb,.gbc,.pack">
     <button class="btn primary" id="uploadBtn" disabled>Upload</button>
   </div>
 
   <div id="romList"></div>
-  <div id="empty" class="hidden">No ROMs on the reader yet.</div>
+  <div id="empty" class="hidden">No ROMs on the reader yet. Upload your own .nes, .gb or .gbc dumps.</div>
 </div>
 
 <div id="player" class="hidden">

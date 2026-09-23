@@ -36,25 +36,26 @@ must be persisted on every page turn.
 
 | Signal | GPIO | Notes |
 |---|---|---|
-| EINK_SCK  | 12 | adapter SCK |
-| EINK_MOSI | 11 | adapter SDI |
-| EINK_MISO | none | panel is write-only; SPI.begin() gets -1 |
-| EINK_CS   | 10 | adapter CS |
+| EINK_MOSI | 17 | adapter SDI |
+| EINK_SCK  | 18 | adapter SCK |
+| EINK_CS   | 8  | adapter CS |
 | EINK_DC   | 9  | adapter D/C |
-| EINK_RST  | 13 | adapter RES |
-| EINK_BUSY | 46 | adapter BUSY |
+| EINK_RST  | 10 | adapter RES |
+| EINK_BUSY | 46 | adapter BUSY (strapping pin, idles LOW at reset) |
+| EINK_MISO | none | panel is write-only; SPI.begin() gets -1 |
 | EINK_VCC  | 3V3 | adapter VCC |
 | EINK_GND  | GND | adapter GND |
-| BME_SDA   | 16 | Wire.begin(16, 17) |
-| BME_SCL   | 17 | |
-| BTN_UP    | 4  | |
-| BTN_DOWN  | 5  | |
-| BTN_LEFT  | 6  | |
-| BTN_RIGHT | 7  | |
-| BTN_CENTER| 15 | |
+| BME_SDA   | 12 | optional sensor, Wire.begin(12, 13) |
+| BME_SCL   | 13 | |
+| BTN_UP    | 40 | |
+| BTN_DOWN  | 41 | |
+| BTN_CENTER| 42 | |
+| BTN_LEFT  | 1  | |
+| BTN_RIGHT | 2  | |
 
-Deliberately avoided: 0/3/45/46 (strapping), 19/20 (native USB), 33 through 37
-(octal PSRAM on N16R8 style boards), 43/44 (UART0). All pins live in
+Deliberately avoided: 0/3/45 (strapping; 46 carries BUSY, which idles LOW so
+download mode still works), 19/20 (native USB), 33 through 37 (octal PSRAM on
+N16R8 style boards), 43/44 (UART0), 15 (dead on the founder's board). All pins live in
 `include/pins.h`, the single source of truth.
 
 ## Build environment
@@ -290,9 +291,22 @@ reads `rows a-b of n`.
   (title, `p. N/M` saved position), Daily numbers (`synced <stamp>` or `never
   synced`, opens the numbers view below), Text size (Normal/Large, only for a
   book with more than one variant), Sync feeds (last stamp), WiFi setup
-  (stored network count), Check WiFi, Games (`N roms`, starts the games
-  server below), Auto sync (on/off), Jump to page (current page), Button
+  (stored network count), Check WiFi, Books and games (WiFi) (`N books, M
+  roms`, starts the books and games server below), Auto sync (on/off), Jump
+  to page (current page), Flip screen (`as built` / `turned 180`), Button
   test.
+- Daily numbers exists only when `METRICS_TOKEN` is set at compile time; Sync
+  feeds and Auto sync only when `NEWS_TOKEN` or `METRICS_TOKEN` is set
+  (`FEEDS_CONFIGURED` in `include/config.h`). A public build with the
+  `CHANGE_ME` placeholders has neither, never auto syncs at boot, and skips
+  any feed whose own token is unset.
+- Flip screen toggles the panel rotation between 1 and 3 (both portrait, 180
+  degrees apart), stores it in NVS (`ui`/`rot`) and redraws with a full
+  refresh. While the rotation differs from `DISPLAY_ROTATION` the pad is
+  turned with the picture: `src/input.cpp` reports UP as DOWN and LEFT as
+  RIGHT (and back) in every event and mask, so every mapping below still
+  means the same direction to the reader. No stored value means
+  `DISPLAY_ROTATION`.
 - Check WiFi (`src/wifi_check.*`) scans once, then tries to join every stored
   network the scan saw, 15 s each, and reports one line per stored network:
   `ssid: ok -52 dBm`, `ssid: wrong password / no join`, `ssid: not in range`.
@@ -413,6 +427,7 @@ slot. The size lives in `include/wifi_config.h` and supersedes the older
 | `news` | `stamp2` | String | `YYYY-MM-DD HH:MM` UTC of the last numbers sync |
 | `news` | `auto` | bool | sync once at boot, default false, all feeds |
 | `news` | `bootsync` | bool | set while a boot sync is running, see the boot loop guard |
+| `ui` | `rot` | u8 | panel rotation from Flip screen, 1 or 3; absent = `DISPLAY_ROTATION` |
 
 ### WiFi setup (captive portal)
 
@@ -603,7 +618,8 @@ appends `auto sync skipped` after the `wdt N` count.
 
 ### Games server
 
-`src/games.*`, reached from the Games tile. The reader hosts NES and Game Boy
+`src/games.*`, reached from the "Books and games (WiFi)" tile. It is also how
+books get onto a finished reader, see "Books over WiFi" below. The reader hosts NES and Game Boy
 (Color) ROMs plus a browser emulator page, and stores the save files, so a
 laptop or a phone plays in its browser and either device can pick up where
 the other left off. The reader never emulates anything; e-ink cannot do 60
@@ -659,9 +675,54 @@ frames a second and the S3 has no RAM to spare next to the shadow buffer.
   - `GET /api/wram`: the last snapshot back out, `404` before the first one.
     Debugging only, so a decoder can be run against a real save on a host.
   - `GET /api/ping`: `{"ok":true,"free":<bytes>,"uptime":<s>,"roms":N,
-    "pack":<bool>,"wram":<bool>}`, and resets the idle timer like every other
-    request. `pack` says whether `GAMES_PACK_PATH` opened, `wram` whether a
-    work RAM snapshot has arrived.
+    "pack":<bool>,"wram":<bool>,"total":<bytes>,"reserve":<bytes>,
+    "txtFactor":N,"txtMax":<bytes>,"books":N}`, and resets the idle timer like
+    every other request. `pack` says whether `GAMES_PACK_PATH` opened, `wram`
+    whether a work RAM snapshot has arrived; the book fields are the space rule
+    below, so the page can refuse a book before sending it.
+- ROM uploads stop with `400 not enough free space on the reader` before they
+  would leave less than `BOOK_UPLOAD_MIN_FREE_BYTES` free: a full LittleFS
+  panics inside littlefs instead of failing the write.
+
+#### Books over WiFi
+
+The same page has a Books section above the games. Routes:
+
+- `GET /api/books`: `[{"slug","title","pages","page","sizes","size"}]`,
+  from `books::list()`: pages of variant 0, saved page, variant count, file
+  bytes.
+- `POST /api/books/upload?size=<bytes>&title=<text>`: multipart, one file,
+  `.txt` or `.pgs`. The slug is the file stem through the host slug rule
+  (`tools/pdf2book.py slugify`, 24 characters); `news` and `numbers` get
+  `_book` appended so a feed can never overwrite an upload. Answers
+  `{"ok":true,"slug","title","pages"}` or `400 {"ok":false,"error"}`.
+  - Space: at the first byte the handler takes the free space once and
+    refuses the upload when `size` (the page's claim) would not fit, then
+    counts the bytes that really arrive against the same budget. A `.txt`
+    may use `(free - BOOK_UPLOAD_MIN_FREE_BYTES) / BOOK_TXT_SPACE_FACTOR`
+    (256 KB reserve, factor 5: raw text, the blobs of both grids and the
+    finished book are on flash at once), capped at `BOOK_MAX_TXT_BYTES`
+    (1 MB, which keeps the page tables small next to the WiFi stack). A
+    `.pgs` may use `free - BOOK_UPLOAD_MIN_FREE_BYTES`, capped at
+    `BOOK_MAX_PGS_BYTES`.
+  - `.txt`: streamed to `BOOK_UPLOAD_TMP_FILE`, then paginated by
+    `news_sync::writeTextBook()`, the news brief's path (`src/text_paginate.*`,
+    both grids, MPG2) into the staging book `/books/.upload.pgs`. UTF-8 in,
+    same normalization as the brief and the host converter; bytes that are
+    not valid UTF-8 are dropped. The title is the `title` query, else the
+    file stem with `_` and `-` as spaces, control characters dropped, at most
+    60 characters. The panel shows "Adding a book" while it paginates.
+  - `.pgs`: streamed straight to the staging book.
+  - Either way the staging book must open with `Book::open()` before it
+    replaces `/books/<slug>.pgs`; the old `.pos` goes with it, so the new
+    book opens at page 1 in the normal size. The staging and temp files are
+    removed on every failure path and again when the server starts, and
+    `books::list()` skips any slug that starts with a dot.
+- `POST /api/books/delete`: form field `slug`; removes the `.pgs` and `.pos`,
+  `404` when there was no such book.
+- When the server returns, `main.cpp` rescans the library and reopens the open
+  book from its file, so a replaced book is never read through a stale page
+  table and a deleted one closes.
 
 #### Pokemon companion screen
 
@@ -763,8 +824,11 @@ with offsets and lengths and says whether the reader would accept it.
   `include/secrets.h.example`).
 - `METRICS_TOKEN`: same file, the read token for the metrics feed
   (`METRICS_READ_TOKEN` on the Worker side). A `secrets.h` written before the
-  metrics feed existed has none, so `config.h` falls back to `"CHANGE_ME"`,
-  which makes that one feed fail with an HTTP 401 rather than the build fail.
+  metrics feed existed has none, so `config.h` falls back to `"CHANGE_ME"`.
+- A token left at `"CHANGE_ME"` hides its feed: the feed is skipped by a
+  sync, and the menu leaves out Daily numbers (metrics) and, with both unset,
+  Sync feeds and Auto sync. This is a compile time check
+  (`NEWS_FEED_CONFIGURED`, `METRICS_FEED_CONFIGURED`, `FEEDS_CONFIGURED`).
 - `NEWS_URL` / `METRICS_URL`: `https://api.muonsortes.com/brief/latest.txt?k=`
   and `https://api.muonsortes.com/metrics/ereader.json?k=` by default.
 - `WIFI_SETUP_AP_SSID` / `WIFI_SETUP_AP_PASSWORD`: portal AP name and, if you

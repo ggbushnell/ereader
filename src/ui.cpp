@@ -341,6 +341,13 @@ void drawStatusStrip(const String &left, const String &right, bool boldRight) {
 
 Adafruit_GFX &gfx() { return display; }
 
+void setRotation(uint8_t rotation) {
+  if (rotation != 1 && rotation != 3) rotation = DISPLAY_ROTATION;
+  display.setRotation(rotation);
+}
+
+uint8_t rotation() { return display.getRotation(); }
+
 void frameBegin(bool forceFull) {
   beginFrame(forceFull || lastFrameWasImage);
   display.firstPage();
