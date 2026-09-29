@@ -71,6 +71,10 @@ class Book {
   uint32_t pageCount() const;
   uint8_t fontId() const;
 
+  // Character-stream position of `page`'s first character in the active
+  // variant (MPG2). 0 for MPG1 books, which carry no anchors, and past the end.
+  uint32_t anchorOf(uint32_t page) const;
+
   uint8_t variantCount() const { return (uint8_t)variants_.size(); }
   uint8_t activeVariant() const { return activeVariant_; }
 

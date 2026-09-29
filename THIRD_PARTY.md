@@ -10,6 +10,9 @@ Bundled in this repository:
 - `src/drivers/GxEPD2_576_T81_Fast.*`: a fast partial refresh driver derived
   from [GxEPD2](https://github.com/ZinggJM/GxEPD2) (GPL-3.0) for the
   GDEH0576T81 panel, see the file header.
+- `include/Gelasio*pt7b.h`: bitmap fonts for speed read, converted with
+  Adafruit fontconvert from [Gelasio](https://github.com/SorkinType/Gelasio)
+  (SorkinType), SIL Open Font License 1.1, see `fonts/Gelasio-OFL.txt`.
 
 Pulled in at build time by PlatformIO (see `platformio.ini` for versions):
 GxEPD2, Adafruit GFX, U8g2_for_Adafruit_GFX, Adafruit BME280, Adafruit

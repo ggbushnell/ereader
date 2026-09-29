@@ -13,6 +13,7 @@
 #include "news_sync.h"
 #include "numbers_view.h"
 #include "pins.h"
+#include "rsvp.h"
 #include "ui.h"
 #include "wifi_check.h"
 #include "wifi_setup.h"
@@ -28,7 +29,7 @@ const uint32_t AUTO_SYNC_GRACE_MS = 8000;
 // right now" flag. Keys are capped at 15 characters.
 const char *NVS_KEY_BOOT_SYNC = "bootsync";
 
-enum class AppState { READING, MENU, JUMP, EMPTY, NUMBERS };
+enum class AppState { READING, MENU, JUMP, EMPTY, NUMBERS, SPEED_PICK, SPEED_READ };
 
 AppState state = AppState::EMPTY;
 
@@ -41,6 +42,9 @@ uint32_t currentPage = 0;
 
 int menuCursor = 0;
 uint32_t jumpTarget = 1;
+
+// Cursor in the speed read book picker (one tile per library book).
+int speedCursor = 0;
 
 // Daily numbers view. The data is loaded from /numbers.json every time the
 // view is opened (it is a few KB) and dropped when it is left. The screen
@@ -284,6 +288,7 @@ void reloadLibraryAfterServer() {
 // book with more than one variant, so hard coded indices do not survive.
 enum class MenuAction {
   RESUME,
+  SPEED_READ,
   OPEN_BOOK,
   NUMBERS,
   TEXT_SIZE,
@@ -320,6 +325,10 @@ std::vector<MenuRow> menuRows() {
   // one. The tile renderer cuts anything too wide with "..".
   rows.push_back(MenuRow("Resume", book.isOpen() ? book.title() : String("no book"),
                          MenuAction::RESUME, -1));
+  rows.push_back(MenuRow("Speed read", String(rsvp::words()) + " word" +
+                             (rsvp::words() > 1 ? "s" : "") + ", " +
+                             String(rsvp::wpm()) + " wpm",
+                         MenuAction::SPEED_READ, -1));
   for (size_t i = 0; i < library.size(); i++) {
     String pos = "p. " + String((unsigned long)(library[i].savedPage + 1)) +
                  "/" + String((unsigned long)library[i].pageCount);
@@ -705,58 +714,149 @@ void handleReading(Button b) {
   }
 }
 
+// Grid navigation, shared by the menu and the speed read book picker. The
+// tiles are laid out row major in `cols` columns, so row = cursor / cols and
+// column = cursor % cols. Only DOWN, LEFT (the founder's "right") and CENTER
+// work on this unit; UP and RIGHT are the reverse moves and are never
+// required. Returns true when `b` was a move (the caller redraws).
+bool moveGridCursor(Button b, int &cursor, int count) {
+  const int cols = ui::menuColumns();
+  const int col = cursor % cols;
+  switch (b) {
+    case BTN_DOWN:
+      // Next row in the same column, wrapping to the top of that column.
+      cursor += cols;
+      if (cursor >= count) cursor = (col < count) ? col : 0;
+      return true;
+    case BTN_UP: {
+      // Previous row in the same column, wrapping to the last row that has
+      // a tile in that column.
+      cursor -= cols;
+      if (cursor < 0) {
+        int last = ((count - 1 - col) / cols) * cols + col;
+        cursor = (last >= 0 && last < count) ? last : 0;
+      }
+      return true;
+    }
+    case BTN_LEFT:
+      // Next column within the row; the last column wraps to the first
+      // column of the same row (an odd tail row has only one column).
+      if (col + 1 < cols && cursor + 1 < count) {
+        cursor += 1;
+      } else {
+        cursor -= col;
+      }
+      return true;
+    case BTN_RIGHT:
+      // Previous column within the row, wrapping to the last tile of the row.
+      if (col > 0) {
+        cursor -= 1;
+      } else {
+        int last = cursor - col + cols - 1;
+        if (last >= count) last = count - 1;
+        cursor = last;
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+// ------------------------------------------------------------ speed read
+//
+// Menu tile -> book picker -> RSVP (src/rsvp.*) -> reading view. The picker
+// is the menu grid with one tile per book, each carrying its saved position;
+// picking one opens it exactly as its menu tile would and starts at the first
+// word of the saved page. Picking the book already open starts at the page
+// being read, mid page if speed read was last left on that same page.
+// Two settings tiles follow the books: Words (1/2/3 per flash) and Speed
+// (steps up by RSVP_WPM_STEP, wrapping); CENTER on one changes it in place.
+
+std::vector<ui::MenuTile> speedTiles() {
+  std::vector<ui::MenuTile> out;
+  for (size_t i = 0; i < library.size(); i++) {
+    out.push_back(ui::MenuTile(
+        library[i].title, "p. " + String((unsigned long)(library[i].savedPage + 1)) +
+                              "/" + String((unsigned long)library[i].pageCount)));
+  }
+  out.push_back(ui::MenuTile("Words", String(rsvp::words()) + " per flash"));
+  out.push_back(ui::MenuTile("Speed", String(rsvp::wpm()) + " wpm"));
+  return out;
+}
+
+void openSpeedPicker() {
+  if (library.empty()) {
+    showEmptyLibrary("");
+    return;
+  }
+  state = AppState::SPEED_PICK;
+  refreshLibrarySaved();
+  // Start on the open book: the likeliest pick.
+  speedCursor = 0;
+  for (size_t i = 0; i < library.size(); i++) {
+    if (book.isOpen() && library[i].slug == book.slug()) speedCursor = (int)i;
+  }
+  ui::renderMenu("Speed read", speedTiles(), speedCursor);
+}
+
+void startSpeedRead(int bookIndex) {
+  if (bookIndex < 0 || bookIndex >= (int)library.size()) return;
+  String slug = library[bookIndex].slug;
+  uint16_t word = 0;
+  if (book.isOpen() && book.slug() == slug) {
+    word = rsvp::resumeWord(slug, book.activeVariant(), currentPage);
+  } else if (!openBook(slug)) {
+    showEmptyLibrary("Could not open " + slug);
+    return;
+  }
+  state = AppState::SPEED_READ;
+  // Presses latched while reading or in the menu are not meant for this.
+  input::clearLatched();
+  rsvp::enter(book, currentPage, word);
+  currentPage = rsvp::page();
+}
+
+void leaveSpeedRead() {
+  rsvp::leave();
+  currentPage = rsvp::page();
+  input::clearLatched();
+  state = AppState::READING;
+  renderCurrentPage(true);
+}
+
+void handleSpeedPicker(Button b) {
+  int books = (int)library.size();
+  if (books == 0) {
+    openMenu();
+    return;
+  }
+  int count = books + 2;  // + Words, Speed
+  if (speedCursor >= count) speedCursor = count - 1;
+  if (moveGridCursor(b, speedCursor, count)) {
+    ui::renderMenu("Speed read", speedTiles(), speedCursor);
+  } else if (b == BTN_CENTER) {
+    if (speedCursor < books) {
+      startSpeedRead(speedCursor);
+      return;
+    }
+    if (speedCursor == books) rsvp::cycleWords();
+    else rsvp::cycleWpm();
+    ui::renderMenu("Speed read", speedTiles(), speedCursor);
+  }
+}
+
 void handleMenu(Button b) {
   std::vector<MenuRow> rows = menuRows();
   int count = (int)rows.size();
   if (menuCursor >= count) menuCursor = count - 1;
 
-  // Grid navigation. The tiles are laid out row major in `cols` columns, so
-  // row = cursor / cols and column = cursor % cols. Only DOWN, LEFT (the
-  // founder's "right") and CENTER work on this unit; UP and RIGHT are the
-  // reverse moves and are never required. There is no back button: the menu
-  // is left via the Resume tile.
-  const int cols = ui::menuColumns();
-  const int col = menuCursor % cols;
+  // There is no back button: the menu is left via the Resume tile.
+  if (moveGridCursor(b, menuCursor, count)) {
+    ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
+    return;
+  }
 
   switch (b) {
-    case BTN_DOWN:
-      // Next row in the same column, wrapping to the top of that column.
-      menuCursor += cols;
-      if (menuCursor >= count) menuCursor = (col < count) ? col : 0;
-      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
-      break;
-    case BTN_UP: {
-      // Previous row in the same column, wrapping to the last row that has
-      // a tile in that column.
-      menuCursor -= cols;
-      if (menuCursor < 0) {
-        int last = ((count - 1 - col) / cols) * cols + col;
-        menuCursor = (last >= 0 && last < count) ? last : 0;
-      }
-      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
-      break;
-    }
-    case BTN_LEFT:
-      // Next column within the row; the last column wraps to the first
-      // column of the same row (an odd tail row has only one column).
-      if (col + 1 < cols && menuCursor + 1 < count) {
-        menuCursor += 1;
-      } else {
-        menuCursor -= col;
-      }
-      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
-      break;
-    case BTN_RIGHT:
-      // Previous column within the row, wrapping to the last tile of the row.
-      if (col > 0) {
-        menuCursor -= 1;
-      } else {
-        int last = menuCursor - col + cols - 1;
-        if (last >= count) last = count - 1;
-        menuCursor = last;
-      }
-      ui::renderMenu(sensorHeader(), labelsOf(rows), menuCursor);
-      break;
     case BTN_CENTER: {
       const MenuRow &row = rows[menuCursor];
       switch (row.action) {
@@ -767,6 +867,9 @@ void handleMenu(Button b) {
           } else {
             showEmptyLibrary("");
           }
+          break;
+        case MenuAction::SPEED_READ:
+          openSpeedPicker();
           break;
         case MenuAction::NUMBERS:
           openNumbers();
@@ -942,6 +1045,7 @@ void setup() {
 
   input::begin();
   applyRotation(storedRotation());
+  rsvp::begin();
 
   // The daily numbers feed used to be paginated into a book; since the grid
   // view it is a JSON file, and whatever the old version left in /books is
@@ -1031,8 +1135,17 @@ void setup() {
 void loop() {
   esp_task_wdt_reset();
   if (state == AppState::JUMP) pumpJumpHold();
+  if (state == AppState::SPEED_READ && rsvp::tick()) {
+    // A flash holds the loop for ~420 ms. Drop what the debouncer half saw
+    // meanwhile; a real press in that window is still in the pin latch below.
+    currentPage = rsvp::page();
+    input::flush();
+  }
   Button b;
-  if (input::poll(b)) {
+  // Speed read spends most of its time inside a refresh, so it also takes
+  // presses the pin interrupt latched while the loop was busy.
+  if (input::poll(b) ||
+      (state == AppState::SPEED_READ && input::takeLatched(b))) {
     switch (state) {
       case AppState::READING:
         handleReading(b);
@@ -1045,6 +1158,16 @@ void loop() {
         break;
       case AppState::NUMBERS:
         handleNumbers(b);
+        break;
+      case AppState::SPEED_PICK:
+        handleSpeedPicker(b);
+        break;
+      case AppState::SPEED_READ:
+        if (rsvp::handle(b)) {
+          leaveSpeedRead();
+        } else {
+          currentPage = rsvp::page();
+        }
         break;
       case AppState::EMPTY:
         if (b == BTN_CENTER) {

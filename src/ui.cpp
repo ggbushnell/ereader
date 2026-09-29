@@ -101,6 +101,18 @@ const uint8_t *FONT_BIG = u8g2_font_fub42_tn;
 // the jump screen.
 const uint8_t *FONT_MENU_LABEL = u8g2_font_helvB24_tr;
 const uint8_t *FONT_MENU_NUM = u8g2_font_fub42_tn;
+// Speed read status line, the font the rsvp_eink proof of concept used.
+const uint8_t *FONT_CAPTION = u8g2_font_helvB14_tr;
+// Speed read HUD: small tracked caps and condensed readout numerals.
+const uint8_t *FONT_HUD = u8g2_font_helvB10_tr;
+const uint8_t *FONT_HUD_NUM = u8g2_font_logisoso38_tr;
+
+// SPI clock for everything but speed read (see ui::begin).
+const uint32_t EINK_SPI_HZ = 10000000;
+
+// Portrait rotation to go back to when speed read leaves landscape.
+uint8_t portraitRotation = DISPLAY_ROTATION;
+bool landscape = false;
 
 // One text grid. The numbers come from config.h and must match the host
 // converter, which paginated the page we are about to draw.
@@ -321,6 +333,9 @@ void setFont(Font f) {
     case Font::BODY: u8g2.setFont(FONT_BODY); break;
     case Font::LABEL: u8g2.setFont(FONT_MENU_LABEL); break;
     case Font::NUM: u8g2.setFont(FONT_MENU_NUM); break;
+    case Font::CAPTION: u8g2.setFont(FONT_CAPTION); break;
+    case Font::HUD: u8g2.setFont(FONT_HUD); break;
+    case Font::HUD_NUM: u8g2.setFont(FONT_HUD_NUM); break;
   }
 }
 
@@ -348,8 +363,39 @@ void setRotation(uint8_t rotation) {
 
 uint8_t rotation() { return display.getRotation(); }
 
+void setLandscape(bool on) {
+  if (on == landscape) return;
+  if (on) {
+    portraitRotation = display.getRotation();
+    display.setRotation(portraitRotation == 3 ? 2 : 0);
+  } else {
+    display.setRotation(portraitRotation);
+  }
+  landscape = on;
+}
+
+void setSpeedDrive(bool on) {
+  display.epd2.selectSPI(
+      SPI, SPISettings(on ? RSVP_SPI_HZ : EINK_SPI_HZ, MSBFIRST, SPI_MODE0));
+  display.epd2.setForcedTemp(on ? RSVP_LUT_TEMP : -1);
+  display.epd2.setCutMs(on ? RSVP_CUT_MS : 0);
+}
+
+void setSpeedCut(int ms) { display.epd2.setCutMs(ms); }
+
 void frameBegin(bool forceFull) {
   beginFrame(forceFull || lastFrameWasImage);
+  display.firstPage();
+}
+
+void frameBeginRaw(bool full) {
+  display.epd2.setFastRefresh(!full);
+  if (full) {
+    display.setFullWindow();
+  } else {
+    // Whole screen, for the same reason as in beginFrame.
+    display.setPartialWindow(0, 0, display.width(), display.height());
+  }
   display.firstPage();
 }
 
@@ -379,7 +425,7 @@ void begin() {
   // second per refresh on the 156 KB two plane frame. The driver now writes
   // whole rows in one burst; drop back to 4 MHz here if the panel ever shows
   // streaks.
-  display.epd2.selectSPI(SPI, SPISettings(10000000, MSBFIRST, SPI_MODE0));
+  display.epd2.selectSPI(SPI, SPISettings(EINK_SPI_HZ, MSBFIRST, SPI_MODE0));
   display.init(115200, true, 50, false);
   // Portrait. The native frame is landscape, so an odd rotation gives the
   // 680x920 canvas every layout constant in config.h is written against.

@@ -219,6 +219,12 @@ uint32_t Book::pageCount() const {
   return (uint32_t)variants_[activeVariant_].pages.size();
 }
 
+uint32_t Book::anchorOf(uint32_t page) const {
+  if (!open_ || activeVariant_ >= variants_.size()) return 0;
+  const std::vector<PageRef> &pages = variants_[activeVariant_].pages;
+  return page < pages.size() ? pages[page].anchor : 0;
+}
+
 uint8_t Book::fontId() const {
   if (!open_ || activeVariant_ >= variants_.size()) return BOOK_FONT_PROFONT22;
   return variants_[activeVariant_].fontId;

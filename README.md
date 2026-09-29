@@ -142,9 +142,33 @@ Menu (a grid of tiles, two columns):
 - LEFT: next column. RIGHT: previous column.
 - CENTER: pick. Leave the menu with the Resume tile.
 
-Menu items: Resume, one tile per book, Text size (Normal or Large, for books
+Menu items: Resume, Speed read, one tile per book, Text size (Normal or Large, for books
 that have both), WiFi setup, Check WiFi, Books and games (WiFi), Jump to
 page, Flip screen, Button test.
+
+Speed read: pick a book and it flashes one, two or three words at a time on
+the landscape screen, from the page you are on in that book (two words at 250
+words a minute to start). The picker ends with two settings tiles: Words
+(1, 2 or 3 per flash) and Speed (+25 wpm a press, wrapping back to 100). While
+it plays, LEFT is faster and DOWN is slower (25 wpm a press, remembered),
+CENTER pauses. Paused, LEFT plays again, DOWN steps back a sentence or two,
+CENTER goes back to the normal page, which is kept in step with what you speed
+read.
+
+How it gets fast on the GDEH0576T81: SPI at 40 MHz, the partial waveform
+picked for a forced 40 C (the shortest the panel stores, 367 ms), and a
+waveform cut. When a flash has to come faster than that waveform allows, the
+driver resets the panel controller 60 ms into the refresh, which stops the
+drive, and re-initialises it (about 90 ms, mostly the charge pump restart).
+Words are already solid black at 60 ms, so a flash drops from about 420 ms to
+about 205 ms: roughly 290 wpm at one word a flash. The cut is automatic and
+per flash: any flash that stays up 450 ms or more gets the full waveform. A
+ghost clearing full refresh runs at the first sentence end after 30 flashes
+(always by 40). The cut adds some ghosting, and a truncated waveform is
+probably not DC balanced, so treat it as experimental on your panel: if
+ghosts survive a full refresh, stop. The cut length and the re-init cost are
+specific to this panel; see `RSVP_*` in `include/config.h` and `setCutMs` in
+the vendored driver.
 
 Jump to page: LEFT +1, RIGHT -1, UP +10, DOWN -10, CENTER goes there. Hold a
 button to repeat. The target wraps around at both ends.

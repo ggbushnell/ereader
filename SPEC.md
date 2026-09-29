@@ -287,7 +287,8 @@ reads `rows a-b of n`.
 - Header band shows `MENU` and the live BME readings: temperature C, humidity
   %, pressure hPa, then the watchdog reboot count if nonzero, then
   `synced YYYY-MM-DD HH:MM` if the news brief has ever been synced.
-- Tiles, in order: Resume (state = open book title), one tile per .pgs found
+- Tiles, in order: Resume (state = open book title), Speed read (`<n>
+  words, <wpm> wpm`, opens the speed read book picker below), one tile per .pgs found
   (title, `p. N/M` saved position), Daily numbers (`synced <stamp>` or `never
   synced`, opens the numbers view below), Text size (Normal/Large, only for a
   book with more than one variant), Sync feeds (last stamp), WiFi setup
@@ -325,6 +326,57 @@ reads `rows a-b of n`.
   unit), CENTER go. Wraps at both ends (below page 1 lands on the last page,
   past the end on page 1). Holding a pad past JUMP_HOLD_MS repeats its step
   every JUMP_REPEAT_MS.
+
+### Speed read
+
+RSVP over a book, in `src/rsvp.*`, ported from the rsvp_eink proof of concept
+(tuning constants `RSVP_*` in `include/config.h`).
+
+- The Speed read tile opens a book picker: the menu grid with one tile per
+  book (title, `p. N/M` saved position), cursor on the open book, same
+  navigation. Picking a book opens it as its menu tile would (saved page,
+  saved variant) and starts at the first word of that page. Picking the book
+  already open starts at the page being read, and at the word it was left on
+  if speed read was last exited on that same page (RAM only). Two settings
+  tiles follow the books: Words (`<n> per flash`, CENTER cycles 1, 2, 3) and
+  Speed (`<wpm> wpm`, CENTER adds 25 and wraps to 100 past the top speed for
+  that word count: 300, 500, 600). Both are stored in NVS (`ui`/`rsvpwords`,
+  `ui`/`rsvpwpm`, defaults 2 and 250).
+- The panel runs landscape (rotation 1 -> 0, 3 -> 2), SPI at 40 MHz and the
+  partial LUT forced to 40 C (`setForcedTemp` in the vendored driver). All
+  three are put back on exit, which returns to the reading view on the current
+  page with a full refresh.
+- Waveform cut (`setCutMs`): a partial refresh is stopped RSVP_CUT_MS (60 ms)
+  after it starts by resetting the controller (200 us pulse), which is then
+  re-initialised with the partial LUT (~90 ms, 83 of it the 0x04 power on).
+  Full refreshes are never cut. The cut is chosen per flash: none when the
+  flash's hold (interval x dwell) is at least RSVP_UNCUT_MIN_MS (450 ms, the
+  full 54 ms SPI + 367 ms drive plus margin). The cut must never be combined
+  with the controller partial window (0x90/0x91): after the reset the RAM is
+  undefined, the window is not honoured, and the whole panel flashes noise.
+- Words per flash as set (fewer at a sentence or paragraph end), left aligned
+  at a fixed edge between two static hairline rules, in 40 pt Gelasio,
+  stepping down (34/28 pt) only when a chunk would run off the right edge. Status line at the bottom: `<wpm> wpm   p. N/M
+  <title>`, plus `PAUSED` or `END` and a one line hint while paused. Latin-1
+  is transliterated to ASCII for the 7 bit fonts. Image pages are skipped.
+- Interval per flash = words * 60000 / wpm (480 ms at 2 words, 250 wpm),
+  held 1.5x at a sentence end and 1.2x at a clause break, scheduled from the
+  previous due time, never bursting to catch up. Entry is a full refresh;
+  after that, a ghost clearing full refresh to a blank band lands at the first
+  sentence end once RSVP_FULL_AFTER (30) partials have run, and in any case at
+  RSVP_FULL_MAX (40), after that chunk's full interval.
+- Paragraph breaks: a blank line inside a page. A page end counts as one when
+  the page ends in a blank line, the next text page is not the next page (an
+  image between), or the next page's first word would have fitted after the
+  page's last line (the wrap is greedy, so the paragraph must have ended).
+- Position: whenever the chunk on glass starts on a new page, that page is
+  saved with the active variant, exactly like a page turn.
+- Playing: LEFT (or RIGHT) +25 wpm, DOWN (or UP) -25 wpm, 100 to the top
+  speed for the word count, stored in NVS; CENTER pauses. Paused: LEFT plays,
+  DOWN steps back 10 chunks and shows that chunk, CENTER exits to
+  the reading view. At the end of the book the mode pauses on `End`.
+- Presses made while a flash holds the loop are taken from the pin latch
+  (`input::takeLatched`), so the pad works during playback.
 
 ### Numbers view
 

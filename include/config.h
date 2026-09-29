@@ -357,3 +357,44 @@ static const int CLOCK_UTC_OFFSET_MINUTES = 420;
 
 // Any epoch past 2025-01-01 means the clock has really been set.
 static const uint32_t NET_TIME_SANE_EPOCH = 1735689600UL;
+
+// Speed read (src/rsvp.*): RSVP, one word at a time flashed in one fixed spot
+// on the landscape panel. Tuned on this panel in the rsvp_eink proof of
+// concept: 40 MHz SPI, the partial LUT picked for a forced 40 C, and that
+// waveform cut at 60 ms (RSVP_CUT_MS) give solid black words in ~205 ms a
+// flash (54 ms SPI + 60 ms drive + ~90 ms controller re-init), a ~290 wpm
+// ceiling. A 60 ms cut is the most ghosting judged fine to ship; 100 ms ghosts
+// less at ~245 wpm. Normal reading keeps 10 MHz, the internal sensor and the
+// full waveform; only the mode switches.
+// Words per flash is a setting (1-3, picker tile, NVS); 2 is the default.
+// The cut is automatic: a flash is only cut when the time it stays on glass
+// (interval x dwell) is shorter than RSVP_UNCUT_MIN_MS, the full uncut flash
+// (54 ms SPI + 367 ms drive) plus margin. So slow settings, and the longer
+// sentence-end holds at mid speeds, run the complete waveform.
+static const int RSVP_WORDS_DEFAULT = 2;
+static const uint32_t RSVP_UNCUT_MIN_MS = 450;
+// Hold multipliers for a chunk that ends a sentence (or paragraph) and one
+// that ends on a comma, semicolon, colon or dash (Spritz-style pacing).
+static const float RSVP_DWELL_SENTENCE = 1.5f;
+static const float RSVP_DWELL_CLAUSE = 1.2f;
+static const int RSVP_WPM_DEFAULT = 250;
+static const int RSVP_WPM_MIN = 100;
+// Top speed by words per flash (index 1-3): about the panel ceiling at a 60 ms
+// cut (~205 ms a flash) for 1 word, and kept readable for 2 and 3.
+static const int RSVP_WPM_MAX_BY_WORDS[4] = {0, 300, 500, 600};
+static const int RSVP_WPM_STEP = 25;
+// Ghost clearing full refresh at the first sentence (or paragraph) end once
+// this many partials have run since the last full, and unconditionally at
+// RSVP_FULL_MAX so a run-on sentence cannot stretch the cycle. 2 words at
+// 425 wpm ghosted noticeably by the end of a 45-flash paragraph cycle.
+static const int RSVP_FULL_AFTER = 30;
+static const int RSVP_FULL_MAX = 40;
+// Chunks the paused "back" press steps back (a sentence or two).
+static const int RSVP_REWIND_CHUNKS = 10;
+static const uint32_t RSVP_SPI_HZ = 40000000;
+static const int RSVP_LUT_TEMP = 40;
+static const int RSVP_CUT_MS = 60;
+// Words per minute, NVS namespace NVS_NS_UI.
+#define NVS_KEY_RSVP_WPM "rsvpwpm"
+// Words per flash, NVS namespace NVS_NS_UI.
+#define NVS_KEY_RSVP_WORDS "rsvpwords"

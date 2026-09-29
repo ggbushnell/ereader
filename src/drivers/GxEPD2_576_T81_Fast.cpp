@@ -309,9 +309,16 @@ void GxEPD2_576_T81_Fast::_writeBuffer_interleaved(const uint8_t* old_buf, const
     _endTransfer();
 }
 
-void GxEPD2_576_T81_Fast::_Init_Common() {
-    _reset();
-    delay(10);
+void GxEPD2_576_T81_Fast::_Init_Common(bool quick_reset) {
+    if (quick_reset) {
+        // Short pulse for the waveform cut: the stock _reset() spends ~40 ms
+        // in delays, most of a cut flash's budget.
+        digitalWrite(_rst, LOW); delayMicroseconds(200);
+        digitalWrite(_rst, HIGH); delayMicroseconds(500);
+    } else {
+        _reset();
+        delay(10);
+    }
     _waitWhileBusy("Init reset", 500);
 
     _writeCommand(0x00);                                              // PSR
@@ -356,9 +363,14 @@ void GxEPD2_576_T81_Fast::_Init_Full() {
     _hibernating = false;
 }
 
-void GxEPD2_576_T81_Fast::_Init_Part() {
-    _Init_Common();
-    _writeCommand(0xE0); _writeData(0x00);
+void GxEPD2_576_T81_Fast::_Init_Part(bool quick_reset) {
+    _Init_Common(quick_reset);
+    if (_forced_temp >= 0) {
+        _writeCommand(0xE0); _writeData(0x02);
+        _writeCommand(0xE6); _writeData((uint8_t)_forced_temp);
+    } else {
+        _writeCommand(0xE0); _writeData(0x00);
+    }
     _writeCommand(0xA5);
     _waitWhileBusy("Init LUT part", 500);
 
@@ -390,6 +402,14 @@ void GxEPD2_576_T81_Fast::setFastRefresh(bool fast) {
     }
 }
 
+void GxEPD2_576_T81_Fast::setForcedTemp(int t) {
+    if (t < 0) t = -1;
+    if (t != _forced_temp) {
+        _forced_temp = t;
+        _init_display_done = false;
+    }
+}
+
 void GxEPD2_576_T81_Fast::_PowerOn() {
     if (!_power_is_on) {
         _writeCommand(0x04);
@@ -409,5 +429,13 @@ void GxEPD2_576_T81_Fast::_PowerOff() {
 
 void GxEPD2_576_T81_Fast::_Update_Full() {
     _writeCommand(0x12); _writeData(0x00);
+    if (_cut_ms > 0 && _using_partial_mode && _rst >= 0) {
+        // Stop the partial waveform early (see setCutMs). The reset leaves
+        // the controller's image RAM undefined, which is fine because every
+        // frame here rewrites the whole panel, old and new bits both.
+        delay(_cut_ms);
+        _Init_Part(true);
+        return;
+    }
     _waitWhileBusy("_Update_Full", full_refresh_time);
 }

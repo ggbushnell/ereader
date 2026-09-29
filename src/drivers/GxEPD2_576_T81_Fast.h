@@ -85,6 +85,20 @@ class GxEPD2_576_T81_Fast : public GxEPD2_EPD
     void hibernate();
     void setFastRefresh(bool fast);
     bool isFastRefresh() const { return _want_fast; }
+    // Forced LUT temperature for the partial waveform, in degrees C (register
+    // 0xE6), or -1 for the controller's internal sensor (the default). Forcing
+    // a warm temperature picks a shorter partial LUT: the speed reader
+    // (src/rsvp.cpp) runs at 40 for ~420 ms flashes with solid black text. A
+    // change takes effect at the next init, which this forces.
+    void setForcedTemp(int t);
+    int forcedTemp() const { return _forced_temp; }
+    // Waveform cut for the speed reader, in ms (0 = off, the default). Each
+    // partial refresh is stopped this long after it starts by resetting the
+    // controller, which halts the drive, then re-initialising it. At a forced
+    // 40 C a 60 ms cut still gives solid black words, and a flash costs about
+    // 150 ms instead of 367 ms, at the price of a little more ghosting. Full
+    // refreshes are never cut.
+    void setCutMs(int ms) { _cut_ms = ms < 0 ? 0 : ms; }
   private:
     void _writeBuffer_fill(uint8_t value);
     void _writeBuffer_1bpp(const uint8_t bitmap[], bool invert, bool mirror_y, bool pgm);
@@ -92,14 +106,16 @@ class GxEPD2_576_T81_Fast : public GxEPD2_EPD
     void _shadowUpdate(const uint8_t* bitmap, bool invert, bool pgm);
     void _shadowFill(uint8_t value);
     bool _ensureShadow();
-    void _Init_Common();
+    void _Init_Common(bool quick_reset = false);
     void _Init_Full();
-    void _Init_Part();
+    void _Init_Part(bool quick_reset = false);
     void _InitDisplay();
     void _PowerOn();
     void _PowerOff();
     void _Update_Full();
     bool _want_fast = false;
+    int _forced_temp = -1;
+    int _cut_ms = 0;
     uint8_t* _shadow = nullptr;
     static const uint32_t _shadow_size = ((uint32_t(WIDTH) + 7) / 8) * uint32_t(HEIGHT);
 };

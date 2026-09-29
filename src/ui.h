@@ -18,6 +18,19 @@ void begin();
 void setRotation(uint8_t rotation);
 uint8_t rotation();
 
+// Speed read (src/rsvp.cpp) runs the panel landscape and faster, and puts
+// both back when it is done, so the rest of the app never sees either.
+//
+// setLandscape(true) maps the portrait rotation to the landscape one the same
+// way up (1 -> 0, 3 -> 2), giving a 920x680 canvas; false restores the
+// portrait rotation it came from. setSpeedDrive(true) runs SPI at RSVP_SPI_HZ
+// and forces the partial LUT temperature to RSVP_LUT_TEMP; false puts back
+// 10 MHz and the internal sensor. Follow either with a full refresh.
+void setLandscape(bool on);
+void setSpeedDrive(bool on);
+// Waveform cut for the next speed read flashes, in ms (0 = full waveform).
+void setSpeedCut(int ms);
+
 // ------------------------------------------------------------ card geometry
 //
 // Shared by the menu (renderMenu below) and the daily numbers view
@@ -47,6 +60,9 @@ enum class Font : uint8_t {
   BODY,         // profont22, page text
   LABEL,        // helvB24, bold proportional
   NUM,          // fub42, digits and , . + - only (no letters)
+  CAPTION,      // helvB14, bold proportional, speed read status line
+  HUD,          // helvB10, speed read HUD labels (tracked caps)
+  HUD_NUM,      // logisoso38, speed read HUD readouts
 };
 void setFont(Font f);
 int textWidth(const String &s);
@@ -74,6 +90,12 @@ static const uint16_t INK_WHITE = 0xFFFF;
 void frameBegin(bool forceFull);
 bool frameNext();
 void frameEnd();
+
+// Same frame, but the caller owns the refresh policy: `full` picks the
+// waveform outright and the ration above is neither consulted nor advanced.
+// The speed reader flashes hundreds of partials a minute and times its own
+// ghost clearing to paragraph breaks.
+void frameBeginRaw(bool full);
 
 // Reading view: page text is rendered verbatim, one screen line per '\n'.
 // `fontId` picks the text grid (BOOK_FONT_* in config.h) and must be the font
