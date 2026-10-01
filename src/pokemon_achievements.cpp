@@ -216,10 +216,17 @@ int update() {
   if (!pokemon::wramValid()) return 0;
   if (!loaded) load();
   uint16_t id = pokemon::playerId();
+  // Title screen, New Game menu, a save not loaded yet: no trainer, nothing
+  // to judge. Treating this as "a different trainer" wiped the stamps and
+  // re-earned everything on the next real snapshot (seen 2026-10-01 when
+  // the Pi started up: six stamps at one minute and a FULL PARTY toast).
+  if (id == 0) return 0;
   bool changed = false;
-  // A different trainer: the stamps were someone else's game.
+  // A different trainer: the stamps were someone else's game. Start over
+  // silently, like a first look at a save: no toast burst.
   if (fileExisted && id != fileId) {
     clearStamps();
+    fileExisted = false;
     changed = true;
   }
   fileId = id;
