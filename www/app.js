@@ -9,6 +9,8 @@
 
   // ---------------------------------------------------------------- constants
 
+  var FAST_MODE = /[?&]fast\b/.test(window.location.search);
+
   var NES_W = 256, NES_H = 240;
   var GB_W = 160, GB_H = 144;
   var NES_FRAME_MS = 1000 / 60.098;   // real NTSC NES rate, not 60
@@ -498,10 +500,13 @@
         isAudioEnabled: true,
         frameSkip: 0,
         audioBatchProcessing: true,
-        timersBatchProcessing: false,
+        // ?fast in the page URL trades a little accuracy for speed on a phone
+        // that cannot hold 60 fps: timers and graphics run per frame instead
+        // of per scanline / per instruction (WasmBoy's own performance options).
+        timersBatchProcessing: FAST_MODE,
         audioAccumulateSamples: true,
         graphicsBatchProcessing: false,
-        graphicsDisableScanlineRendering: false,
+        graphicsDisableScanlineRendering: FAST_MODE,
         tileRendering: true,
         tileCaching: true,
         gameboyFrameRate: 60,
