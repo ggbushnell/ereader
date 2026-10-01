@@ -7,6 +7,7 @@
 #include "gbgfx.h"
 #include "pack.h"
 #include "pokemon_achievements.h"
+#include "pokemon_data.h"
 #include "pokemon_state.h"
 #include "ui.h"
 
@@ -39,6 +40,7 @@ namespace {
 
 using pokemon::BattleMon;
 using pokemon::Mon;
+using namespace pokedata;
 
 // ---------------------------------------------------------------- geometry
 
@@ -55,7 +57,6 @@ const char *S_TOWN_MAP = "townmap_map";
 const char *S_TOWN_CURSOR = "townmap_cursor";
 const char *S_TOWN_ENTRIES = "townmap_entries";
 const char *S_MAP_NAMES = "map_names";
-const char *S_MAP_LABELS = "map_labels";
 const char *S_BADGES = "badges";
 const char *S_LEADER_FACES = "leader_faces";
 const char *S_BADGE_NUMBERS = "badge_numbers";
@@ -71,20 +72,6 @@ const char *S_TILESET_INDEX = "tileset_index";
 const char *S_BLOCKSETS = "blocksets";
 const char *S_BLOCKSET_INDEX = "blockset_index";
 const char *S_MAPS = "maps";
-const char *S_MAP_INDEX = "map_index";
-const char *S_DEX_ORDER = "dex_order";
-const char *S_SPECIES_NAMES = "species_names";
-const char *S_BASE_STATS = "base_stats";
-const char *S_ITEM_NAMES = "item_names";
-const char *S_ITEM_PRICES = "item_prices";
-const char *S_MOVE_NAMES = "move_names";
-const char *S_MOVE_DATA = "move_data";
-const char *S_TYPE_NAMES = "type_names";
-const char *S_TYPE_CHART = "type_chart";
-const char *S_TRAINER_CLASS = "trainer_class";
-const char *S_WILD = "wild";
-const char *S_ITEMS_PLACED = "items_placed";
-const char *S_ITEMS_HIDDEN = "items_hidden";
 
 // Gen 1 character codes the layout doc names. The first block lives in the
 // 2 bpp font_battle page (index = code - 0x60); the accented e is an ordinary
@@ -111,9 +98,6 @@ const uint8_t CODE_RULE = 0x7A;   // the horizontal box rule
 uint8_t battlePage[32 * 16];
 bool battleTried = false, battleOk = false;
 
-uint8_t typeChart[128 * 3];
-int typeChartRecs = 0;
-bool chartTried = false;
 
 uint8_t townTiles[16 * 16];
 uint8_t townCells[20 * 18];
@@ -133,34 +117,11 @@ uint8_t picBuf[7 * 7 * 16];
 
 // ------------------------------------------------------------ little helpers
 
-uint16_t le16(const uint8_t *p) {
-  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-uint32_t le32(const uint8_t *p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-         ((uint32_t)p[3] << 24);
-}
 
 int clampInt(int v, int lo, int hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// One string out of a STRTAB section: u16 count, u16 offset per entry, then
-// the zero terminated strings.
-String packString(const char *section, int index, size_t cap = 32) {
-  if (index < 0) return String();
-  uint8_t head[2];
-  if (pack::read(section, 0, head, 2) != 2) return String();
-  int count = (int)le16(head);
-  if (index >= count) return String();
-  uint8_t off[2];
-  if (pack::read(section, 2 + 2 * (size_t)index, off, 2) != 2) return String();
-  char buf[40];
-  if (cap > sizeof(buf) - 1) cap = sizeof(buf) - 1;
-  size_t n = pack::read(section, le16(off), buf, cap);
-  buf[n] = 0;
-  return String(buf);
-}
 
 String rjust(long v, int cells) {
   char buf[16];
@@ -192,111 +153,21 @@ void drawBattleTile(uint8_t code, int x, int y, int scale) {
   if (t) gbgfx::drawTile2bpp(t, x, y, scale, true);
 }
 
-uint8_t dexOf(uint8_t internalIndex) {
-  if (!internalIndex) return 0;
-  uint8_t dex = 0;
-  pack::read(S_DEX_ORDER, (size_t)internalIndex - 1, &dex, 1);
-  return dex;
-}
 
-String speciesNameByDex(uint8_t dex) {
-  if (!dex || dex > 151) return String();
-  return packString(S_SPECIES_NAMES, dex - 1, 12);
-}
 
-String speciesName(uint8_t internalIndex) {
-  return speciesNameByDex(dexOf(internalIndex));
-}
 
-bool baseStats(uint8_t dex, uint8_t out[9]) {
-  if (!dex || dex > 151) return false;
-  return pack::read(S_BASE_STATS, (size_t)(dex - 1) * 9, out, 9) == 9;
-}
 
-String typeName(uint8_t type) {
-  return packString(S_TYPE_NAMES, type, 10);
-}
 
-String typeLine(uint8_t t1, uint8_t t2) {
-  String a = typeName(t1);
-  if (t2 == t1) return a;
-  String b = typeName(t2);
-  if (!b.length()) return a;
-  return a + "/" + b;
-}
 
-// Multiplier times ten of one attacking type against one defending type.
-int chartMul(uint8_t atk, uint8_t def) {
-  if (!chartTried) {
-    chartTried = true;
-    size_t len = pack::size(S_TYPE_CHART);
-    if (len > sizeof(typeChart)) len = sizeof(typeChart);
-    size_t got = pack::read(S_TYPE_CHART, 0, typeChart, len);
-    typeChartRecs = (int)(got / 3);
-  }
-  for (int i = 0; i < typeChartRecs; i++) {
-    const uint8_t *r = typeChart + i * 3;
-    if (r[0] == atk && r[1] == def) return r[2];
-  }
-  return 10;   // any pair the table does not list is neutral
-}
 
-// The product of both defending types, as a percentage of neutral.
-int effPercent(uint8_t moveType, uint8_t d1, uint8_t d2) {
-  // Both entries are ten times their multiplier, so the product is already a
-  // percentage of neutral: 5 and 5 give 25, 20 and 20 give 400.
-  int m = chartMul(moveType, d1);
-  int n = (d2 != d1) ? chartMul(moveType, d2) : 10;
-  return m * n;
-}
 
-// Three cells, inverted, or empty for neutral. 'x' is the game's own times
-// glyph: gen1Encode maps it to code $F1.
-String effBadge(int percent) {
-  switch (percent) {
-    case 0: return "x0 ";
-    case 25: return "1/4";
-    case 50: return "1/2";
-    case 200: return "x2 ";
-    case 400: return "x4 ";
-    default: return String();
-  }
-}
 
-String itemName(uint8_t id) { return packString(S_ITEM_NAMES, id, 14); }
 
-uint16_t itemPrice(uint8_t id) {
-  uint8_t p[2];
-  if (pack::read(S_ITEM_PRICES, (size_t)id * 2, p, 2) != 2) return 0;
-  return le16(p);
-}
 
-String moveName(uint8_t id) {
-  if (!id) return String();
-  return packString(S_MOVE_NAMES, id - 1, 14);
-}
 
-bool moveData(uint8_t id, uint8_t out[4]) {
-  if (!id) return false;
-  return pack::read(S_MOVE_DATA, (size_t)(id - 1) * 4, out, 4) == 4;
-}
 
-String mapLabel(uint8_t map) { return packString(S_MAP_LABELS, map, 30); }
 
-String trainerClassName(uint8_t cls) {
-  if (!cls) return String();
-  return packString(S_TRAINER_CLASS, cls - 1, 14);
-}
 
-const char *statusText(uint8_t status, bool fainted) {
-  if (fainted) return "FNT";
-  if (status & 0x07) return "SLP";
-  if (status & 0x08) return "PSN";
-  if (status & 0x10) return "BRN";
-  if (status & 0x20) return "FRZ";
-  if (status & 0x40) return "PAR";
-  return "";
-}
 
 // ---------------------------------------------------------------- tile draw
 
@@ -367,16 +238,8 @@ int loadPic(uint8_t dex, bool front) {
 // The game's nine tile bar: HP: glyph, left cap, six fill tiles, right cap.
 // Fill is 48 source pixels wide; the colour rule repaints the fill band.
 
-int hpFill(int hp, int maxHp) {
-  if (maxHp <= 0 || hp <= 0) return 0;
-  int e = 48 * hp / maxHp;
-  if (e == 0) e = 1;
-  if (e > 48) e = 48;
-  return e;
-}
 
 // 0 green, 1 yellow, 2 red, exactly GetHealthBarColor.
-int hpColor(int e) { return e >= 27 ? 0 : (e >= 10 ? 1 : 2); }
 
 void drawHpBar(int x, int y, int scale, int hp, int maxHp, bool partyCap) {
   int e = hpFill(hp, maxHp);
@@ -753,27 +616,7 @@ void viewInventory() {
 
 // ---------------------------------------------------------- view: terrain
 
-struct MapInfo {
-  uint32_t offset;
-  uint8_t w, h, tileset, border;
-  bool ok;
-};
 
-MapInfo mapInfo(uint8_t map) {
-  MapInfo mi;
-  mi.ok = false;
-  mi.offset = 0;
-  mi.w = mi.h = mi.tileset = mi.border = 0;
-  uint8_t rec[8];
-  if (pack::read(S_MAP_INDEX, (size_t)map * 8, rec, 8) != 8) return mi;
-  mi.offset = le32(rec);
-  mi.w = rec[4];
-  mi.h = rec[5];
-  mi.tileset = rec[6];
-  mi.border = rec[7];
-  mi.ok = mi.w > 0 && mi.h > 0;
-  return mi;
-}
 
 // Tileset graphics and blockset for one tileset id, cached so a terrain
 // redraw does not reread 4 KB from the filesystem every time.
@@ -823,41 +666,8 @@ void drawBlock(uint8_t block, int x, int y) {
 
 // A merged wild encounter table: at most ten species with summed odds and a
 // level range.
-struct Encounter {
-  uint8_t species;
-  uint8_t levelLo, levelHi;
-  int odds;
-};
 
-const int SLOT_ODDS[10] = {20, 20, 15, 10, 10, 10, 5, 5, 4, 1};
 
-int mergeSlots(const uint8_t *slots, Encounter *out) {
-  int n = 0;
-  for (int i = 0; i < 10; i++) {
-    uint8_t level = slots[i * 2];
-    uint8_t species = slots[i * 2 + 1];
-    if (!species) continue;
-    int found = -1;
-    for (int j = 0; j < n; j++) {
-      if (out[j].species == species) {
-        found = j;
-        break;
-      }
-    }
-    if (found < 0) {
-      out[n].species = species;
-      out[n].levelLo = level;
-      out[n].levelHi = level;
-      out[n].odds = SLOT_ODDS[i];
-      n++;
-    } else {
-      if (level < out[found].levelLo) out[found].levelLo = level;
-      if (level > out[found].levelHi) out[found].levelHi = level;
-      out[found].odds += SLOT_ODDS[i];
-    }
-  }
-  return n;
-}
 
 // `CATERPIE   L  3  40`: name 10, space, L, a three cell level field that can
 // hold a range, space, odds 2. Eighteen cells. The space after the name
@@ -897,40 +707,7 @@ void drawEncounterRow(int x, int y, const Encounter &e) {
   drawDexMark(x + 10 * 16, y, pokemon::dexOwnedBit(dex), pokemon::dexSeenBit(dex));
 }
 
-struct MapItem {
-  uint8_t x, y, item;
-  bool hidden;
-  bool taken;
-};
 
-// Placed item balls and hidden ground items on one map, in pack order.
-int collectItems(uint8_t map, MapItem *out, int cap) {
-  int n = 0;
-  uint8_t rec[5];
-  size_t count = pack::size(S_ITEMS_PLACED) / 5;
-  for (size_t i = 0; i < count && n < cap; i++) {
-    if (pack::read(S_ITEMS_PLACED, i * 5, rec, 5) != 5) break;
-    if (rec[0] != map) continue;
-    out[n].x = rec[1];
-    out[n].y = rec[2];
-    out[n].item = rec[3];
-    out[n].hidden = false;
-    out[n].taken = pokemon::objectTaken(rec[4]);
-    n++;
-  }
-  count = pack::size(S_ITEMS_HIDDEN) / 5;
-  for (size_t i = 0; i < count && n < cap; i++) {
-    if (pack::read(S_ITEMS_HIDDEN, i * 5, rec, 5) != 5) break;
-    if (rec[0] != map) continue;
-    out[n].x = rec[1];
-    out[n].y = rec[2];
-    out[n].item = rec[3];
-    out[n].hidden = true;
-    out[n].taken = pokemon::hiddenItemTaken(rec[4]);
-    n++;
-  }
-  return n;
-}
 
 void drawItemRow(int x, int y, const MapItem &it, int nameCells) {
   char coords[8];
@@ -949,9 +726,8 @@ void viewTerrain() {
   uint8_t map = pokemon::curMap();
   MapInfo mi = mapInfo(map);
 
-  uint8_t wild[42];
-  bool haveWild = pack::read(S_WILD, (size_t)map * 42, wild, 42) == 42 &&
-                  (wild[0] || wild[21]);
+  WildTable wt = wildTable(map);
+  bool haveWild = wt.ok;
   MapItem items[40];
   int itemCount = collectItems(map, items, 40);
   bool haveItems = itemCount > 0;
@@ -1070,15 +846,14 @@ void viewTerrain() {
 
     if (haveWild) {
       gbgfx::drawBox(encX, 568, encTiles, 20, 2);
-      Encounter grass[10], water[10];
-      int ng = wild[0] ? mergeSlots(wild + 1, grass) : 0;
-      int nw = wild[21] ? mergeSlots(wild + 22, water) : 0;
+      const Encounter *grass = wt.grass, *water = wt.water;
+      int ng = wt.nGrass, nw = wt.nWater;
       bool twoColumns = encTiles == 42;
       int row = 0;
       int col2 = encInner + 320;
 
       gbgfx::printGb(encInner, 584,
-                     "GRASS " + rjust((wild[0] * 100 + 128) / 256, 3) + " PCT", 2,
+                     "GRASS " + rjust((wt.grassRate * 100 + 128) / 256, 3) + " PCT", 2,
                      false);
       for (int i = 0; i < ng && row < 16; i++) {
         row++;
@@ -1087,7 +862,7 @@ void viewTerrain() {
       if (nw) {
         if (twoColumns) {
           gbgfx::printGb(col2, 584,
-                         "WATER " + rjust((wild[21] * 100 + 128) / 256, 3) + " PCT", 2,
+                         "WATER " + rjust((wt.waterRate * 100 + 128) / 256, 3) + " PCT", 2,
                          false);
           for (int i = 0; i < nw && i < 17; i++) {
             drawEncounterRow(col2, 600 + 16 * i, water[i]);
@@ -1096,7 +871,7 @@ void viewTerrain() {
           row += 2;
           if (row < 17) {
             gbgfx::printGb(encInner, 584 + 16 * row,
-                           "WATER " + rjust((wild[21] * 100 + 128) / 256, 3) + " PCT",
+                           "WATER " + rjust((wt.waterRate * 100 + 128) / 256, 3) + " PCT",
                            2, false);
             int dropped = 0;
             for (int i = 0; i < nw; i++) {
@@ -1190,36 +965,7 @@ void drawPartyStrip() {
 // above the catch rate fails; otherwise W = floor(floor(MaxHP*255/F) /
 // max(floor(HP/4), 1)) with F = 8 for a Great Ball and 12 for the rest.
 // W > 255 catches outright, else Rand2 on [0, 255] must not exceed W.
-enum class Ball : uint8_t { POKE, GREAT, ULTRA };
 
-int catchPercent(const BattleMon &e, Ball ball) {
-  int r1Max = ball == Ball::POKE ? 255 : (ball == Ball::GREAT ? 200 : 150);
-  int factor = ball == Ball::GREAT ? 8 : 12;
-  int status = 0;
-  if ((e.status & 0x07) || (e.status & 0x20)) {
-    status = 25;   // asleep or frozen
-  } else if (e.status & (0x08 | 0x10 | 0x40)) {
-    status = 12;   // poisoned, burned or paralysed
-  }
-  long quarter = e.hp / 4;
-  if (quarter < 1) quarter = 1;
-  long w = ((long)e.maxHp * 255 / factor) / quarter;
-  // Probability scaled by 256 * (r1Max + 1) to stay in integers.
-  long num = 0;
-  for (int r1 = 0; r1 <= r1Max; r1++) {
-    if (status > r1) {
-      num += 256;
-    } else if (r1 - status > (int)e.catchRate) {
-      continue;
-    } else if (w > 255) {
-      num += 256;
-    } else {
-      num += w + 1;
-    }
-  }
-  long den = 256L * (r1Max + 1);
-  return (int)((num * 100 + den / 2) / den);
-}
 
 // "POKE  36  GREAT  54  ULTRA  36": whole percent, no unit (the Gen 1 font
 // has no percent sign and the row is read as odds).
@@ -1229,28 +975,12 @@ String oddsText(const char *label, int percent) {
   return String(buf);
 }
 
-// Experience needed to reach level `n` under growth rate `g`, exactly as
-// CalcExperience does it: floor(a*n^3/b) + c*n^2 + d*n - e, coefficients
-// from data/growth_rates.asm in GROWTH_* order.
-long expForLevel(int g, int n) {
-  static const int T[6][5] = {{1, 1, 0, 0, 0},     {3, 4, 10, 0, 30},
-                              {3, 4, 20, 0, 70},   {6, 5, -15, 100, 140},
-                              {4, 5, 0, 0, 0},     {5, 4, 0, 0, 0}};
-  if (g < 0 || g > 5) g = 0;
-  long n3 = (long)n * n * n;
-  long v = (T[g][0] * n3) / T[g][1] + (long)T[g][2] * n * n + (long)T[g][3] * n - T[g][4];
-  return v < 0 ? 0 : v;
-}
 
 // "NEXT LV   765": experience still needed for the active party member.
 String nextLevelText(int slot, uint8_t internalIndex, uint8_t level) {
   if (level >= 100) return String("NEXT LV    MAX");
-  uint8_t dex = dexOf(internalIndex);
-  if (!dex) return String();
-  uint8_t g = 0;
-  if (pack::read("growth", (size_t)dex - 1, &g, 1) != 1) return String();
-  long need = expForLevel(g, level + 1) - (long)pokemon::partyExp(slot);
-  if (need < 0) need = 0;
+  long need = expToNextLevel(slot, internalIndex, level);
+  if (need < 0) return String();
   return "NEXT LV" + rjust(need, 7);
 }
 
@@ -1260,17 +990,11 @@ String nextLevelText(int slot, uint8_t internalIndex, uint8_t level) {
 // dual types too. Cut from the right to 42 cells if a dual type lists more
 // than fits; weaknesses come first because they are the ones to act on.
 void drawMatchupBand(const BattleMon &enemy) {
-  static const uint8_t TYPES[15] = {0, 1, 2, 3, 4, 5, 7, 8, 20, 21, 22, 23, 24, 25, 26};
+  Matchups mu = matchups(enemy.type1, enemy.type2);
   String weak, res, imm;
-  for (int i = 0; i < 15; i++) {
-    uint8_t t = TYPES[i];
-    int e = effPercent(t, enemy.type1, enemy.type2);
-    String name = typeName(t);
-    if (!name.length()) continue;
-    if (e > 100) weak += " " + name;
-    else if (e == 0) imm += " " + name;
-    else if (e < 100) res += " " + name;
-  }
+  for (int i = 0; i < mu.nWeak; i++) weak += " " + typeName(mu.weak[i]);
+  for (int i = 0; i < mu.nResist; i++) res += " " + typeName(mu.resist[i]);
+  for (int i = 0; i < mu.nImmune; i++) imm += " " + typeName(mu.immune[i]);
   // Sections are added whole word by whole word while they fit in 42 cells;
   // a section that cannot finish ends in "..", a section that cannot start
   // is left out.
@@ -1589,8 +1313,7 @@ namespace pokemon_views {
 void reset() {
   achievements::reset();
   battleTried = battleOk = false;
-  chartTried = false;
-  typeChartRecs = 0;
+  pokedata::reset();
   townTried = townOk = false;
   cachedTileset = cachedBlockset = -1;
   cachedTilesetCount = cachedBlockCount = 0;
