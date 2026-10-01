@@ -81,16 +81,18 @@
   }
 
   function renderPickups(d) {
-    const b = $('#card-pickups .body');
-    if (!d.pickups.length) { b.innerHTML = '<p class="empty">No items to find on this map.</p>'; return; }
+    const b = $('#pickups');
+    if (!d.pickups.length) { b.innerHTML = '<div class="hint" style="margin-top:10px">No items to find on this map.</div>'; return; }
     const taken = d.pickups.filter((p) => p.taken).length;
-    b.innerHTML = `<div class="hint">${taken} of ${d.pickups.length} picked up</div>` + d.pickups.map((p) => `
+    b.innerHTML = `<div class="hint" style="margin-top:12px"><b>Items on this map</b> · ${taken} of ${d.pickups.length} picked up · red squares on the map are the ones still there (hollow = hidden)</div>` + d.pickups.map((p) => `
       <div class="row ${p.taken ? 'taken' : ''}">
         <span class="chip ${p.hidden ? 'warn' : 'muted'}">${p.hidden ? 'hidden' : 'ball'}</span>
-        <div class="name">${esc(p.item)}</div>
-        <div class="odds">${p.x}, ${p.y}</div>
+        <div class="name" style="flex:1;max-width:none">${esc(p.item)}</div>
+        <div class="odds">at ${p.x}, ${p.y}</div>
+        <div class="odds">${p.taken ? 'taken' : ''}</div>
       </div>`).join('');
   }
+
 
   function movesTable(moves) {
     if (!moves || !moves.length) return '<p class="empty">No moves known.</p>';
@@ -178,7 +180,7 @@
       $('#status').textContent = age < 0 ? 'no snapshot yet' : age < 5 ? 'live' : age < 90 ? `last change ${age}s ago` : `no game posting · last change ${Math.round(age / 60)} min ago`;
       $('#status').style.color = age >= 0 && age < 5 ? 'var(--good)' : 'var(--muted)';
       if (d.renders !== lastRenders) { lastRenders = d.renders; $('#frame').src = '/frame.png?' + lastRenders; $('#mapimg').src = '/map.png?' + lastRenders; }
-      $('#mapcap').textContent = `${d.location.label} · ${d.location.x}, ${d.location.y}` + (d.location.repelSteps ? ` · repel ${d.location.repelSteps}` : '') + ' · red squares are items still on the ground (hollow = hidden)';
+      $('#mapcap').textContent = `${d.location.label} · you are at ${d.location.x}, ${d.location.y}` + (d.location.repelSteps ? ` · repel ${d.location.repelSteps} steps` : '');
       renderHeader(d); renderBattle(d); renderParty(d); renderLocation(d); renderEncounters(d); renderPickups(d); renderAwards(d); renderBag(d);
       toast(d.achievements ? d.achievements.toast : null);
     } catch (e) { $('#status').textContent = 'companion server unreachable'; }
