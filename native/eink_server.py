@@ -3,8 +3,9 @@
 
 Polls the stub games server for the Game Boy work RAM mirror, renders the
 firmware's own companion views through ./pokeview, and serves the frame as a
-680x920 PNG on a page that refreshes once a second. The pad buttons follow
-src/games.cpp: UP next page, DOWN previous page, LEFT terrain on/off.
+680x920 PNG on a page that refreshes once a second. The controls follow the
+hint strip the views draw (the device's pad labels): R next page, L back,
+U terrain on/off. Right/Left/Up arrows and the letters r, l, u do the same.
 
     python3 eink_server.py [--stub http://localhost:8080] [--port 8081] [--root ../stub_games]
 """
@@ -114,9 +115,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Companion e-in
  #toast.show{opacity:1}
 </style></head><body>
 <div class="bar">
- <button onclick="pad('up')">▲ UP · next page</button>
- <button onclick="pad('down')">▼ DOWN · prev page</button>
- <button onclick="pad('left')">◀ LEFT · terrain</button>
+ <button onclick="pad('next')">R · next page  (→ or r)</button>
+ <button onclick="pad('prev')">L · back  (← or l)</button>
+ <button onclick="pad('terrain')">U · terrain  (↑ or u)</button>
  <button onclick="toggleSize()">1:1 / fit</button>
 </div>
 <div id="toast"></div>
@@ -128,7 +129,7 @@ let lastToast=null,toastTimer=null;
 function showToast(t){if(!t||t===lastToast)return;lastToast=t;toast.textContent='Achievement: '+t;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),8000)}
 function pad(d){fetch('/pad?dir='+d,{method:'POST'}).then(tick)}
 function toggleSize(){img.classList.toggle('big')}
-document.addEventListener('keydown',e=>{const m={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left'};if(m[e.key]){e.preventDefault();pad(m[e.key])}});
+document.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;const m={ArrowRight:'next',r:'next',R:'next',ArrowLeft:'prev',l:'prev',L:'prev',ArrowUp:'terrain',u:'terrain',U:'terrain'};if(m[e.key]){e.preventDefault();pad(m[e.key])}});
 let last=-1;
 async function tick(){
   try{
@@ -180,11 +181,12 @@ class H(BaseHTTPRequestHandler):
         p, _, q = self.path.partition("?")
         if p == "/pad":
             d = dict(kv.split("=", 1) for kv in q.split("&") if "=" in kv).get("dir", "")
-            if d == "up":
+            # Hint-strip names; the firmware's own pad names still work.
+            if d in ("next", "up"):
                 state["page"] = (state["page"] + 1) % 3
-            elif d == "down":
+            elif d in ("prev", "down"):
                 state["page"] = (state["page"] - 1) % 3
-            elif d == "left":
+            elif d in ("terrain", "left"):
                 state["terrain"] = not state["terrain"]
             pad_event.set()
             return self.send(200, "application/json", b'{"ok":true}')
