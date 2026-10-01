@@ -1254,6 +1254,53 @@ String nextLevelText(int slot, uint8_t internalIndex, uint8_t level) {
   return "NEXT LV" + rjust(need, 7);
 }
 
+// The enemy's defensive match-ups as one inverted band in the divider's
+// place: WEAK (takes double or more), RES (half or less), IMMUNE. Judged
+// over the game's fifteen types with the pack's chart, so it is right for
+// dual types too. Cut from the right to 42 cells if a dual type lists more
+// than fits; weaknesses come first because they are the ones to act on.
+void drawMatchupBand(const BattleMon &enemy) {
+  static const uint8_t TYPES[15] = {0, 1, 2, 3, 4, 5, 7, 8, 20, 21, 22, 23, 24, 25, 26};
+  String weak, res, imm;
+  for (int i = 0; i < 15; i++) {
+    uint8_t t = TYPES[i];
+    int e = effPercent(t, enemy.type1, enemy.type2);
+    String name = typeName(t);
+    if (!name.length()) continue;
+    if (e > 100) weak += " " + name;
+    else if (e == 0) imm += " " + name;
+    else if (e < 100) res += " " + name;
+  }
+  // Sections are added whole word by whole word while they fit in 42 cells;
+  // a section that cannot finish ends in "..", a section that cannot start
+  // is left out.
+  String line = "WEAK" + (weak.length() ? weak : String(" NONE"));
+  const String *parts[2] = {&res, &imm};
+  const char *labels[2] = {"  RES", "  IMMUNE"};
+  for (int k = 0; k < 2; k++) {
+    if (!parts[k]->length()) continue;
+    String section = labels[k];
+    String rest = *parts[k];
+    bool any = false;
+    while (rest.length()) {
+      int sp = rest.indexOf(' ', 1);
+      String word = sp < 0 ? rest : rest.substring(0, (size_t)sp);
+      rest = sp < 0 ? String() : rest.substring((size_t)sp);
+      if (line.length() + section.length() + word.length() + (rest.length() ? 2 : 0) > 42) {
+        if (any) section += " ..";
+        rest = String();
+        break;
+      }
+      section += word;
+      any = true;
+    }
+    if (any) line += section;
+  }
+  Adafruit_GFX &g = ui::gfx();
+  g.fillRect(0, 216, SCREEN_W, 24, ui::INK_BLACK);
+  gbgfx::printGb(12, 220, line, 2, true);
+}
+
 void viewBattle() {
   drawTopBar("BATTLE");
   BattleMon enemy, mine;
@@ -1331,9 +1378,14 @@ void viewBattle() {
     }
   }
 
-  // Divider: the box rule tile across the whole width.
-  for (int i = 0; i < 42; i++) {
-    gbgfx::drawFontCode(CODE_RULE, 4 + 16 * i, 216, 2, false);
+  // Divider: against a wild or trainer Pokemon, a black band saying what hits
+  // it hard and what it shrugs off; the plain rule tile when there is none.
+  if (haveEnemy) {
+    drawMatchupBand(enemy);
+  } else {
+    for (int i = 0; i < 42; i++) {
+      gbgfx::drawFontCode(CODE_RULE, 4 + 16 * i, 216, 2, false);
+    }
   }
 
   if (haveMine) {
