@@ -5,6 +5,7 @@
 //   pokeview --root stub_games --wram wram.bin --decode            (print the decoded state as JSON)
 //   pokeview --root stub_games --wram wram.bin --view-json [--page N] [--terrain]   (every fact the views draw, as JSON)
 //   pokeview --root stub_games --dump-assets <dir>                 (the pack's graphics as coloured PNGs)
+//   pokeview --root stub_games --wram wram.bin --map-png out.png   (the terrain around the player, in colour)
 //
 // The root is the stub server's --root (its "flash"); the pack is read from
 // <root>/games/aux/pokered.pack exactly where the firmware looks, so the stub
@@ -26,6 +27,7 @@
 
 void printViewJson(int page, bool terrain);   // viewjson.cpp
 int dumpAssets(const std::string &dir);       // assets.cpp
+bool renderMapPng(const std::string &path, int winCols, int winRows);   // assets.cpp
 
 static bool loadWram(const char *path) {
   FILE *f = fopen(path, "rb");
@@ -124,7 +126,7 @@ static void decodeJson() {
 }
 
 int main(int argc, char **argv) {
-  std::string root = ".", wram, out, allPrefix, assetsDir;
+  std::string root = ".", wram, out, allPrefix, assetsDir, mapPng;
   int page = 0;
   bool terrain = false, decode = false, viewJson = false;
   for (int i = 1; i < argc; i++) {
@@ -139,6 +141,7 @@ int main(int argc, char **argv) {
     else if (a == "--decode") decode = true;
     else if (a == "--view-json") viewJson = true;
     else if (a == "--dump-assets") next(assetsDir);
+    else if (a == "--map-png") next(mapPng);
     else { fprintf(stderr, "pokeview: unknown argument %s\n", a.c_str()); return 2; }
   }
   if (wram.empty() && assetsDir.empty()) { fprintf(stderr, "pokeview: --wram is required\n"); return 2; }
@@ -151,6 +154,7 @@ int main(int argc, char **argv) {
 
   if (decode) { decodeJson(); return 0; }
   if (viewJson) { printViewJson(page, terrain); return 0; }
+  if (!mapPng.empty()) return renderMapPng(mapPng, 12, 10) ? 0 : 1;
 
   if (!allPrefix.empty()) {
     struct { const char *name; int page; bool terrain; } views[] = {

@@ -248,3 +248,119 @@ int dumpAssets(const std::string &dir) {
   fprintf(stderr, "dump-assets: %d files under %s\n", total, dir.c_str());
   return total;
 }
+
+// ---------------------------------------------------------------- map window
+//
+// pokeview --map-png <file>: the terrain the e-paper's Terrain view shows,
+// in colour at 1x (a block is 32 px, a step 16 px): the map blocks around the
+// player from the real tileset, the map's border block outside it, Red's
+// walking frame for the direction faced (right = left mirrored, as the game
+// does), and a marker on each item still to be picked up. The area palette
+// follows the Super Game Boy's rule closely enough: a town uses its own
+// palette, a cave PAL_CAVE, everything else PAL_ROUTE.
+
+namespace {
+
+uint8_t rev8(uint8_t b) {
+  b = (uint8_t)((b >> 4) | (b << 4));
+  b = (uint8_t)(((b & 0xCC) >> 2) | ((b & 0x33) << 2));
+  b = (uint8_t)(((b & 0xAA) >> 1) | ((b & 0x55) << 1));
+  return b;
+}
+
+const int TILESET_CAVERN = 17;   // constants/tileset_constants.asm
+
+}  // namespace
+
+bool renderMapPng(const std::string &path, int winCols, int winRows) {
+  using namespace pokedata;
+  loadPalettes();
+  uint8_t map = pokemon::curMap();
+  MapInfo mi = mapInfo(map);
+  if (!mi.ok) return false;
+
+  uint8_t rec[6];
+  if (pack::read("tileset_index", (size_t)mi.tileset * 6, rec, 6) != 6) return false;
+  int tileCount = le16(rec + 4);
+  std::vector<uint8_t> tiles((size_t)tileCount * 16);
+  if (pack::read("tilesets", le32(rec), tiles.data(), tiles.size()) != tiles.size()) return false;
+  if (pack::read("blockset_index", (size_t)mi.tileset * 6, rec, 6) != 6) return false;
+  int blockCount = le16(rec + 4);
+  std::vector<uint8_t> blocks((size_t)blockCount * 16);
+  if (pack::read("blocksets", le32(rec), blocks.data(), blocks.size()) != blocks.size()) return false;
+
+  int palIdx = map < 11 ? palIndexNamed("PAL_PALLET") + map
+             : mi.tileset == TILESET_CAVERN ? palIndexNamed("PAL_CAVE") : palIndexNamed("PAL_ROUTE");
+  Palette pal = paletteOr(palIdx, greyPalette());
+
+  int px = pokemon::playerX(), py = pokemon::playerY();
+  int pbx = px / 2, pby = py / 2;
+  auto clampInt = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };
+  int bx = 0, by = 0, colOffset = 0, rowOffset = 0;
+  if (mi.w >= winCols) bx = clampInt(pbx - winCols / 2, 0, mi.w - winCols); else colOffset = (winCols - mi.w) / 2;
+  if (mi.h >= winRows) by = clampInt(pby - winRows / 2, 0, mi.h - winRows); else rowOffset = (winRows - mi.h) / 2;
+
+  Image img(winCols * 32, winRows * 32);
+  std::vector<uint8_t> row((size_t)winCols);
+  for (int j = 0; j < winRows; j++) {
+    int my = by + j - rowOffset;
+    bool rowOk = false;
+    if (my >= 0 && my < mi.h) {
+      int take = mi.w - bx;
+      if (take > winCols) take = winCols;
+      if (take > 0) {
+        rowOk = pack::read("maps", mi.offset + (size_t)my * mi.w + bx, row.data(), (size_t)take) == (size_t)take;
+        for (int i = take; i < winCols; i++) row[(size_t)i] = mi.border;
+      }
+    }
+    for (int i = 0; i < winCols; i++) {
+      int mx = bx + i - colOffset;
+      uint8_t block = mi.border;
+      if (rowOk && mx >= 0 && mx < mi.w && i - colOffset >= 0 && i - colOffset < winCols) block = row[(size_t)(i - colOffset)];
+      if (block >= blockCount) continue;
+      const uint8_t *b = &blocks[(size_t)block * 16];
+      for (int ty = 0; ty < 4; ty++)
+        for (int tx = 0; tx < 4; tx++) {
+          uint8_t t = b[ty * 4 + tx];
+          if (t < tileCount) blitTile(img, &tiles[(size_t)t * 16], i * 32 + tx * 8, j * 32 + ty * 8, pal, false);
+        }
+    }
+  }
+
+  // Items still on the ground: a small marker, hollow for hidden ones.
+  MapItem items[40];
+  int ni = collectItems(map, items, 40);
+  for (int k = 0; k < ni; k++) {
+    if (items[k].taken) continue;
+    int ix = 16 * (items[k].x - 2 * bx) + 32 * colOffset + 4, iy = 16 * (items[k].y - 2 * by) + 32 * rowOffset + 4;
+    for (int dy = 0; dy < 8; dy++)
+      for (int dx = 0; dx < 8; dx++) {
+        bool edge = dx == 0 || dy == 0 || dx == 7 || dy == 7;
+        if (items[k].hidden && !edge) continue;
+        img.set(ix + dx, iy + dy, {230, 70, 50}, 255);
+      }
+  }
+
+  // Red.
+  uint8_t walk[3 * 4 * 16];
+  if (pack::read("player_walk", 0, walk, sizeof(walk)) == sizeof(walk)) {
+    uint8_t facing = pokemon::playerFacing();
+    int frame = facing == 4 ? 1 : (facing == 8 || facing == 12) ? 2 : 0;
+    bool mirror = facing == 12;
+    int sx = 16 * (px - 2 * bx) + 32 * colOffset, sy = 16 * (py - 2 * by) + 32 * rowOffset - 4;
+    Palette spritePal = paletteOr(palIndexNamed("PAL_ROUTE"), greyPalette());
+    for (int ty = 0; ty < 2; ty++)
+      for (int tx = 0; tx < 2; tx++) {
+        const uint8_t *t = walk + ((size_t)frame * 4 + ty * 2 + tx) * 16;
+        uint8_t work[16];
+        int dx = tx;
+        if (mirror) {
+          for (int r = 0; r < 16; r++) work[r] = rev8(t[r]);
+          t = work;
+          dx = 1 - tx;
+        }
+        blitTile(img, t, sx + dx * 8, sy + ty * 8, spritePal, true);
+      }
+  }
+  return writePng(path, img.w, img.h, img.px);
+}

@@ -30,6 +30,7 @@ state = {
 }
 frame_png = b""
 view_json = b"{}"
+map_png = b""
 frame_lock = threading.Lock()
 WEB_DIR = os.path.join(HERE, "web")
 ASSETS_DIR = os.path.join(HERE, "out", "assets")
@@ -73,10 +74,17 @@ def render(wram, page, terrain):
     if terrain:
         vcmd.append("--terrain")
     v = subprocess.run(vcmd, capture_output=True)
-    global view_json
+    global view_json, map_png
     if v.returncode == 0 and v.stdout.strip().startswith(b"{"):
         with frame_lock:
             view_json = v.stdout
+    map_path = os.path.join(HERE, "out", "live-map.png")
+    mp = subprocess.run([POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--map-png", map_path], capture_output=True)
+    if mp.returncode == 0 and os.path.exists(map_path):
+        with open(map_path, "rb") as f:
+            data = f.read()
+        with frame_lock:
+            map_png = data
     im = Image.open(pgm_path).convert("1")
     buf = io.BytesIO()
     im.save(buf, format="PNG", optimize=True)
@@ -184,6 +192,12 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p in ("/", "/eink"):
             return self.send(200, "text/html; charset=utf-8", PAGE.encode())
+        if p == "/map.png":
+            with frame_lock:
+                png = map_png
+            if not png:
+                return self.send(404, "text/plain", b"no map yet")
+            return self.send(200, "image/png", png)
         if p == "/frame.png":
             with frame_lock:
                 png = frame_png

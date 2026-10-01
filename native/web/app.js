@@ -175,7 +175,8 @@
       const age = d.snapshotAge;
       $('#status').textContent = age < 0 ? 'no snapshot yet' : age < 5 ? 'live' : age < 90 ? `last change ${age}s ago` : `no game posting · last change ${Math.round(age / 60)} min ago`;
       $('#status').style.color = age >= 0 && age < 5 ? 'var(--good)' : 'var(--muted)';
-      if (d.renders !== lastRenders) { lastRenders = d.renders; $('#frame').src = '/frame.png?' + lastRenders; }
+      if (d.renders !== lastRenders) { lastRenders = d.renders; $('#frame').src = '/frame.png?' + lastRenders; $('#mapimg').src = '/map.png?' + lastRenders; }
+      $('#mapcap').textContent = `${d.location.label} · ${d.location.x}, ${d.location.y}` + (d.location.repelSteps ? ` · repel ${d.location.repelSteps}` : '') + ' · red squares are items still on the ground (hollow = hidden)';
       renderHeader(d); renderBattle(d); renderParty(d); renderLocation(d); renderEncounters(d); renderPickups(d); renderAwards(d); renderBag(d);
       toast(d.achievements ? d.achievements.toast : null);
     } catch (e) { $('#status').textContent = 'companion server unreachable'; }
