@@ -1221,11 +1221,11 @@ int catchPercent(const BattleMon &e, Ball ball) {
   return (int)((num * 100 + den / 2) / den);
 }
 
-// The Gen 1 font has no percent sign, so the odds read "BALL  92 PCT" like
-// the encounter tables' "GRASS 10 PCT".
+// "POKE  36  GREAT  54  ULTRA  36": whole percent, no unit (the Gen 1 font
+// has no percent sign and the row is read as odds).
 String oddsText(const char *label, int percent) {
   char buf[20];
-  snprintf(buf, sizeof(buf), "%s%3d PCT", label, percent);
+  snprintf(buf, sizeof(buf), "%s%4d", label, percent);
   return String(buf);
 }
 
@@ -1324,11 +1324,13 @@ void viewBattle() {
     drawHpBar(20, 72, 3, enemy.hp, enemy.maxHp, false);
     drawHpNumbers(252, 76, 2, enemy.hp, enemy.maxHp);
     gbgfx::printGb(20, 104, typeLine(enemy.type1, enemy.type2), 2, false);
+    // The four DVs summed (0..60; 30 is average, 60 perfect) beside the type
+    // line, the raw catch rate beside the Pokedex row.
+    {
+      int sum = enemy.dvAtk + enemy.dvDef + enemy.dvSpd + enemy.dvSpc;
+      gbgfx::printGb(276, 104, "DV SUM " + rjust(sum, 2) + "/60", 2, sum >= 48);
+    }
     if (!trainer) {
-      // Live capture odds at this HP and status; the raw catch rate moves
-      // down a row. One Poke Ball here, Great and Ultra under the stats.
-      gbgfx::printGb(276, 104, oddsText("BALL  ", catchPercent(enemy, Ball::POKE)),
-                     2, false);
       gbgfx::printGb(276, 128, "RATE " + rjust(enemy.catchRate, 3), 2, false);
     }
 
@@ -1371,9 +1373,12 @@ void viewBattle() {
       }
     }
     if (!trainer) {
+      // Live capture odds at this HP and status, all three balls on one row
+      // under the stats.
       gbgfx::printGb(20, 200,
-                     oddsText("GREAT ", catchPercent(enemy, Ball::GREAT)) + "  " +
-                         oddsText("ULTRA ", catchPercent(enemy, Ball::ULTRA)),
+                     oddsText("POKE", catchPercent(enemy, Ball::POKE)) + "  " +
+                         oddsText("GREAT", catchPercent(enemy, Ball::GREAT)) + "  " +
+                         oddsText("ULTRA", catchPercent(enemy, Ball::ULTRA)),
                      2, false);
     }
   }
