@@ -1325,7 +1325,7 @@ void viewBattle() {
     drawHpNumbers(252, 76, 2, enemy.hp, enemy.maxHp);
     gbgfx::printGb(20, 104, typeLine(enemy.type1, enemy.type2), 2, false);
     // The four DVs summed (0..60; 30 is average, 60 perfect) beside the type
-    // line, inverted above 52 (about the top 1 percent of wild encounters),
+    // line, inverted above 52 (one wild encounter in 200 scores 53 or more),
     // line, the raw catch rate beside the Pokedex row.
     {
       int sum = enemy.dvAtk + enemy.dvDef + enemy.dvSpd + enemy.dvSpc;
