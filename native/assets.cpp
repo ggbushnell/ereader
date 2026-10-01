@@ -293,6 +293,11 @@ bool renderMapPng(const std::string &path, int winCols, int winRows) {
              : mi.tileset == TILESET_CAVERN ? palIndexNamed("PAL_CAVE") : palIndexNamed("PAL_ROUTE");
   Palette pal = paletteOr(palIdx, greyPalette());
 
+  // A map smaller than the window gets a window its own size plus a one
+  // block frame of border, instead of a sea of border around a small room.
+  if (mi.w + 2 < winCols) winCols = mi.w + 2;
+  if (mi.h + 2 < winRows) winRows = mi.h + 2;
+
   int px = pokemon::playerX(), py = pokemon::playerY();
   int pbx = px / 2, pby = py / 2;
   auto clampInt = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };

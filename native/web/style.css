@@ -67,6 +67,6 @@ main { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 @media (max-width: 900px) { .battle { grid-template-columns: 1fr; } .cols { grid-template-columns: 1fr; } }
 
-.mapwin { width: 100%; image-rendering: pixelated; border-radius: 8px; border: 1px solid var(--line); display: block; aspect-ratio: 384 / 320; background: var(--dim); }
+.mapwin { width: 100%; max-width: 768px; margin: 0 auto; image-rendering: pixelated; border-radius: 8px; border: 1px solid var(--line); display: block; background: var(--dim); }
 #card-terrain { grid-column: span 1; }
 @media (min-width: 1300px) { #card-terrain { grid-column: span 2; } }
