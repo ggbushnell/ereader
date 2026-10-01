@@ -493,7 +493,10 @@ void drawTownMap() {
     if (!pokemon::townVisited(city)) continue;
     uint8_t te[3];
     if (pack::read(S_TOWN_ENTRIES, (size_t)city * 3, te, 3) != 3) continue;
-    int tx = te[0] % 16, ty = te[1] % 16;
+    // Entry coordinates are the game's sprite coordinates: the town's tile is
+    // two columns right and one row down of them (screen x*8+16, y*8+8, see
+    // the cursor maths below). Centre the block in that 16x16 tile.
+    int tx = te[0] % 16 + 2, ty = te[1] % 16 + 1;
     ui::gfx().fillRect(180 + 16 * tx + 4, 32 + 16 * ty + 4, 8, 8, ui::INK_BLACK);
   }
 
