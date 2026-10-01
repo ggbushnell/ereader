@@ -93,6 +93,13 @@ static void decodeJson() {
   printf(",\"achievements\":{\"earned\":%d,\"total\":%d,", achievements::earnedCount(),
          achievements::count());
   printf("\"toast\":%s,", toast >= 0 ? jsonStr(String(achievements::def(toast).title)).c_str() : "null");
+  int last = achievements::lastEarned();
+  if (last >= 0) {
+    printf("\"last\":{\"title\":%s,\"atMinutes\":%d},", jsonStr(String(achievements::def(last).title)).c_str(),
+           (int)achievements::earnedAtMinutes(last));
+  } else {
+    printf("\"last\":null,");
+  }
   if (next >= 0) {
     printf("\"next\":{\"title\":%s,\"hint\":%s},", jsonStr(String(achievements::def(next).title)).c_str(),
            jsonStr(String(achievements::def(next).hint)).c_str());

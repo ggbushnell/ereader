@@ -243,6 +243,8 @@ int update() {
   return fresh;
 }
 
+int lastEarned() { return (lastIndex == NONE || lastIndex >= N) ? -1 : (int)lastIndex; }
+
 int toast() {
   if (lastIndex == NONE || lastIndex >= N || !pokemon::wramValid()) return -1;
   uint32_t now = playSeconds();

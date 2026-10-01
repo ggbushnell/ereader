@@ -52,6 +52,8 @@ int update();
 
 // Index of the achievement to show as a toast right now, -1 for none.
 int toast();
+// Index of the most recently earned achievement ever, -1 for none.
+int lastEarned();
 
 // Reads the stamp file (or starts empty). Call once the filesystem is up and
 // again after the pack or a save changes; reset() forgets everything in RAM.

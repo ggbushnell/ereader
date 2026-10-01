@@ -1542,17 +1542,20 @@ void viewAwards() {
   drawHint("R:HOME  L:INVENTORY  U:TERRAIN  C:EXIT");
 }
 
-// While a freshly earned achievement is current, the hint strip at the bottom
-// carries it instead of the pad hints: nothing of the view is covered.
+// While a freshly earned achievement is current, a tall inverted banner sits
+// over the hint strip and the bottom of the view: a small NEW ACHIEVEMENT
+// line and the title at scale 3. Big enough to catch from across a desk.
 void drawToast() {
   int i = achievements::toast();
   if (i < 0) return;
   Adafruit_GFX &g = ui::gfx();
-  g.fillRect(0, HINT_Y, SCREEN_W, SCREEN_H - HINT_Y, ui::INK_WHITE);
-  g.fillRect(0, HINT_Y, SCREEN_W, 2, ui::INK_BLACK);
-  String text = "NEW ACHIEVEMENT  " + String(achievements::def(i).title);
-  int w = gbgfx::textWidthGb(text, 2);
-  gbgfx::printGb((SCREEN_W - w) / 2, HINT_TEXT_Y, text, 2, false);
+  const int H = 64;
+  g.fillRect(0, SCREEN_H - H, SCREEN_W, H, ui::INK_BLACK);
+  g.fillRect(0, SCREEN_H - H, SCREEN_W, 2, ui::INK_WHITE);
+  String head = "NEW ACHIEVEMENT";
+  gbgfx::printGb((SCREEN_W - gbgfx::textWidthGb(head, 2)) / 2, SCREEN_H - H + 8, head, 2, true);
+  String title = achievements::def(i).title;
+  gbgfx::printGb((SCREEN_W - gbgfx::textWidthGb(title, 3)) / 2, SCREEN_H - H + 30, title, 3, true);
 }
 
 enum class View : uint8_t { NONE, HOME, INVENTORY, AWARDS, TERRAIN, BATTLE, NO_PACK };

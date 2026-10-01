@@ -112,7 +112,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Companion e-in
  button:hover{background:#555}
  #s{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#bbb;max-width:680px;text-align:center;margin:0 16px 20px;white-space:pre-wrap}
  .warn{color:#f6c343}
- #toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#f6c343;color:#222;font-weight:600;padding:10px 18px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.5);opacity:0;transition:opacity .3s;pointer-events:none}
+ #toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#f6c343;color:#222;font-weight:700;font-size:20px;padding:14px 26px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.5);opacity:0;transition:opacity .3s;pointer-events:none}
  #toast.show{opacity:1}
 </style></head><body>
 <div class="bar">
@@ -127,7 +127,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Companion e-in
 <script>
 const img=document.getElementById('f'),s=document.getElementById('s'),toast=document.getElementById('toast');
 let lastToast=null,toastTimer=null;
-function showToast(t){if(!t||t===lastToast)return;lastToast=t;toast.textContent='Achievement: '+t;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),8000)}
+function showToast(t){if(!t){toast.classList.remove('show');lastToast=null;return}if(t===lastToast)return;lastToast=t;toast.textContent='🏆 Achievement: '+t;toast.classList.add('show')}
 function pad(d){fetch('/pad?dir='+d,{method:'POST'}).then(tick)}
 function toggleSize(){img.classList.toggle('big')}
 document.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;const m={ArrowRight:'next',r:'next',R:'next',ArrowLeft:'prev',l:'prev',L:'prev',ArrowUp:'terrain',u:'terrain',U:'terrain'};if(m[e.key]){e.preventDefault();pad(m[e.key])}});

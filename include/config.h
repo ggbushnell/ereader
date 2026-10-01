@@ -187,7 +187,7 @@ static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 // Companion achievements: when each was first earned (src/pokemon_achievements.*).
 #define GAMES_ACHIEVEMENTS_PATH GAMES_AUX_DIR "/achievements.bin"
 // How long a newly earned achievement stays as a banner, in play time seconds.
-static const uint32_t ACHIEVEMENT_TOAST_SEC = 12;
+static const uint32_t ACHIEVEMENT_TOAST_SEC = 60;
 #define GAMES_AP_SSID "ereader-games"
 #define GAMES_AP_PASSWORD "ereader1"
 #define GAMES_AP_IP_TEXT "192.168.4.1"
