@@ -74,7 +74,7 @@ def render(wram, page, terrain):
     elif terrain:
         state["view"] = "TERRAIN"
     else:
-        state["view"] = "INVENTORY" if page % 2 else "HOME"
+        state["view"] = ("HOME", "INVENTORY", "AWARDS")[page % 3]
 
 
 def poll_loop():
@@ -181,9 +181,9 @@ class H(BaseHTTPRequestHandler):
         if p == "/pad":
             d = dict(kv.split("=", 1) for kv in q.split("&") if "=" in kv).get("dir", "")
             if d == "up":
-                state["page"] = (state["page"] + 1) % 2
+                state["page"] = (state["page"] + 1) % 3
             elif d == "down":
-                state["page"] = (state["page"] - 1) % 2
+                state["page"] = (state["page"] - 1) % 3
             elif d == "left":
                 state["terrain"] = not state["terrain"]
             pad_event.set()
