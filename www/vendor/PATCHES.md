@@ -41,5 +41,7 @@ Every tick the worker copied the cartridge RAM (32 KB for Pokemon Red), the
 and posted them to the memory worker. Measured on the phone this overhead,
 not the emulation, was most of the frame budget (1x ran at 0.6-0.7x; at 4x,
 with the post amortised over four frames, it reached 1.7x). The post now
-happens every 4th tick (about 15 Hz). Saves and the WRAM mirror read memory
+happens every 4th tick (about 15 Hz). Measured afterwards: the phone still ran
+0.6-0.8x at 1x, so this was NOT the phone's bottleneck; kept as a harmless
+reduction of per-frame work. Saves and the WRAM mirror read memory
 on request through the worker, so nothing downstream sees stale data.
