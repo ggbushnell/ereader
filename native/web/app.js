@@ -170,7 +170,11 @@
       const d = await r.json();
       if (serverId === null) serverId = d.server; else if (d.server !== serverId) { location.reload(); return; }
       if (!d.player) { $('#status').textContent = 'waiting for the game…'; return; }
-      $('#status').textContent = (d.snapshotAge >= 0 ? `snapshot ${d.snapshotAge}s ago` : 'no snapshot') + (d.wramOk ? '' : ' · game not running');
+      // Freshness is "when did the game's memory last change": a paused or
+      // closed game stops changing, and that is what the player wants to know.
+      const age = d.snapshotAge;
+      $('#status').textContent = age < 0 ? 'no snapshot yet' : age < 5 ? 'live' : age < 90 ? `last change ${age}s ago` : `no game posting · last change ${Math.round(age / 60)} min ago`;
+      $('#status').style.color = age >= 0 && age < 5 ? 'var(--good)' : 'var(--muted)';
       if (d.renders !== lastRenders) { lastRenders = d.renders; $('#frame').src = '/frame.png?' + lastRenders; }
       renderHeader(d); renderBattle(d); renderParty(d); renderLocation(d); renderEncounters(d); renderPickups(d); renderAwards(d); renderBag(d);
       toast(d.achievements ? d.achievements.toast : null);

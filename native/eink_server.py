@@ -26,6 +26,7 @@ POKEVIEW = os.path.join(HERE, "pokeview")
 state = {
     "page": 0, "terrain": False, "counter": 0, "wram_ok": False, "last_wram_at": 0.0,
     "render_ms": 0, "renders": 0, "decode": {}, "error": "", "view": "no snapshot",
+    "last_change_at": 0.0,   # when the game's memory last changed (the honest freshness)
 }
 frame_png = b""
 view_json = b"{}"
@@ -103,6 +104,8 @@ def poll_loop():
             state["last_wram_at"] = time.time()
             h = hashlib.sha1(wram).hexdigest()
             pad = (state["page"], state["terrain"])
+            if h != last_hash:
+                state["last_change_at"] = time.time()
             if h != last_hash or pad != last_pad or pad_event.is_set():
                 pad_event.clear()
                 last_hash, last_pad = h, pad
@@ -197,7 +200,7 @@ class H(BaseHTTPRequestHandler):
             # the page needs the server id (reload on restart) and the snapshot age
             extra = (',"server":"%s","renders":%d,"wramOk":%s,"snapshotAge":%d}' % (
                 SERVER_ID, state["renders"], "true" if state["wram_ok"] else "false",
-                int(time.time() - state["last_wram_at"]) if state["last_wram_at"] else -1)).encode()
+                int(time.time() - state["last_change_at"]) if state["last_change_at"] else -1)).encode()
             body = body.rstrip().rstrip(b"}") + extra if body.strip() != b"{}" else b'{"server":"%s"}' % SERVER_ID.encode()
             return self.send(200, "application/json", body)
         if p == "/web" or p == "/web/":
