@@ -65,7 +65,7 @@
         <span class="mark ${e.owned ? 'owned' : (e.seen ? '' : 'none')}" title="${e.owned ? 'owned' : (e.seen ? 'seen' : 'never met')}"></span>
         <div class="name">${esc(e.species)}</div>
         <div class="lv">L${e.levelLo}${e.levelHi !== e.levelLo ? '–' + e.levelHi : ''}</div>
-        <div class="hp"><div class="bar"><i style="width:${e.odds}%;background:var(--accent)"></i></div></div>
+        <div class="hp oddsbar"><div class="bar"><i style="width:${e.odds}%;background:var(--accent)"></i></div></div>
         <div class="odds">${e.odds}%</div>
       </div>`).join('');
   }

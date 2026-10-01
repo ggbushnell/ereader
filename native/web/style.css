@@ -39,7 +39,9 @@ main { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)
 .taken { text-decoration: line-through; color: var(--muted); }
 .mark { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ink); flex: none; }
 .mark.owned { background: var(--ink); } .mark.none { border-color: var(--dim); }
-.odds { min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.oddsbar { min-width: 60px; }
+.row > * { min-width: 0; }
+.odds { min-width: 44px; flex: none; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .townmap { position: relative; width: 100%; aspect-ratio: 160 / 144; }
 .townmap img { width: 100%; height: 100%; image-rendering: pixelated; border-radius: 8px; display: block; }
 .townmap .pin { position: absolute; width: 5%; height: 5.55%; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--card); }
