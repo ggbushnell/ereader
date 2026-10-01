@@ -24,12 +24,13 @@ main { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)
 .sprite { width: 56px; height: 56px; image-rendering: pixelated; object-fit: contain; flex: none; }
 .sprite.sm { width: 40px; height: 40px; }
 .name { font-weight: 600; min-width: 120px; max-width: 170px; }
+.name .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lv { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }
-.hp { flex: 1; min-width: 120px; }
+.hp { flex: 1; min-width: 170px; }
 .bar { height: 10px; background: var(--dim); border-radius: 5px; overflow: hidden; }
 .bar > i { display: block; height: 100%; border-radius: 5px; background: var(--good); }
 .bar.c1 > i { background: var(--warn); } .bar.c2 > i { background: var(--bad); }
-.nums { font-size: 12px; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; margin-top: 3px; }
+.nums { font-size: 12px; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; gap: 14px; margin-top: 3px; }
 .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--dim); color: var(--ink); margin: 2px 4px 2px 0; font-weight: 600; }
 .chip.good { background: #cfe8d4; color: #1e5a2a; } .chip.bad { background: #f3d2cd; color: #7a1f14; } .chip.warn { background: #f6e4ad; color: #5d4300; } .chip.muted { color: var(--muted); font-weight: 500; }
 @media (prefers-color-scheme: dark) { .chip.good { background: #244a2c; color: #bfe6c7; } .chip.bad { background: #552520; color: #f3c6bf; } .chip.warn { background: #4f3f10; color: #f4dc9a; } }
