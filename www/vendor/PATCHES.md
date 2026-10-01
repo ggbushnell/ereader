@@ -33,3 +33,13 @@ core fell below 57 fps. Measured with the game's own play-time clock: laptop
 Chrome 1x -> 0.9x, 2x -> 1.7x, 4x -> 2.8x (frames per tick working, 4x
 capped by per-tick work); the phone, warm after an hour, held only 0.8x
 even at 1x, so fast forward there is bounded by the device.
+
+### Follow-up, same day: memory snapshot posted every 4th tick
+
+Every tick the worker copied the cartridge RAM (32 KB for Pokemon Red), the
+64 KB of Game Boy memory, the palette, and a full `saveState()` serialisation,
+and posted them to the memory worker. Measured on the phone this overhead,
+not the emulation, was most of the frame budget (1x ran at 0.6-0.7x; at 4x,
+with the post amortised over four frames, it reached 1.7x). The post now
+happens every 4th tick (about 15 Hz). Saves and the WRAM mirror read memory
+on request through the worker, so nothing downstream sees stale data.
