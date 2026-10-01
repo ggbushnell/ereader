@@ -15,6 +15,12 @@ like the browser page does. Nothing downstream can tell the difference.
 
     python3 retroarch_wram_poller.py --host batocera.local [--port 55355]
                                      [--stub http://localhost:8080] [--chunk 1024]
+                                     [--sync-web <stub root>/saves/pokemon_red.gb]
+
+With --sync-web the battery save is kept in step as well (save_sync.py): when
+the Pi's game stops, its save is pulled to the web side if it is ahead; while
+the Pi sits at its menu, a newer web save is pushed to it. Save states on the
+receiving side are moved aside (dated), never deleted.
 
 Setup on Batocera: append to /userdata/system/configs/retroarch/retroarchcustom.cfg
     network_cmd_enable = "true"
@@ -22,7 +28,13 @@ Setup on Batocera: append to /userdata/system/configs/retroarch/retroarchcustom.
 then launch the game. Test one read first:
     printf 'READ_CORE_MEMORY c000 16' | nc -u -w1 batocera.local 55355
 """
-import argparse, hashlib, socket, sys, time, urllib.request
+import argparse, hashlib, os, socket, sys, time, urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from save_sync import Sync
+except ImportError:
+    Sync = None
 
 WRAM_BASE = 0xC000
 WRAM_BYTES = 0x2000
@@ -64,15 +76,37 @@ def main():
     ap.add_argument("--stub", default="http://localhost:8080")
     ap.add_argument("--chunk", type=int, default=1024)
     ap.add_argument("--interval", type=float, default=1.0)
+    ap.add_argument("--sync-web", default=None, help="stub save base path to keep in step with the Pi's .srm")
+    ap.add_argument("--pi-srm", default="/userdata/saves/gb/pokemon_red.srm")
     a = ap.parse_args()
+    sync = Sync(a.host, a.sync_web, a.pi_srm) if (a.sync_web and Sync) else None
+    if a.sync_web and not Sync:
+        print("save_sync.py not found next to this script; running without save sync", flush=True)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.connect((a.host, a.port))
     print(f"polling {a.host}:{a.port} every {a.interval}s -> {a.stub}/api/wram", flush=True)
     last = None
     posts = fails = 0
+    running = False          # a game answered on the last tick
+    stopped_at = None        # when it stopped answering
+    next_push_check = 0.0
     while True:
         t0 = time.time()
+        if sync and running is False and stopped_at is not None and t0 - stopped_at > 6:
+            # The game just ended: RetroArch has written its .srm by now.
+            stopped_at = None
+            try:
+                sync.pull()
+            except Exception as e:
+                print("sync pull failed:", e, flush=True)
+        if sync and not running and t0 >= next_push_check:
+            next_push_check = t0 + 30
+            try:
+                if sync.pi_reachable() and not sync.pi_game_running():
+                    sync.push()
+            except Exception as e:
+                print("sync push check failed:", e, flush=True)
         try:
             wram = read_wram(sock, a.chunk)
             h = hashlib.sha1(wram).hexdigest()
@@ -83,8 +117,15 @@ def main():
                 if posts % 10 == 1:
                     print(f"posted #{posts} ({sum(1 for b in wram if b)} nonzero bytes)", flush=True)
             fails = 0
+            if not running:
+                print("game running on the Pi", flush=True)
+            running = True
         except (socket.timeout, ConnectionRefusedError, OSError, RuntimeError) as e:
             fails += 1
+            if running:
+                running = False
+                stopped_at = time.time()
+                print("game stopped on the Pi", flush=True)
             if fails in (1, 10, 60):
                 print(f"no memory from RetroArch ({e}); is a game running with network commands on?", flush=True)
         time.sleep(max(0.0, a.interval - (time.time() - t0)))
