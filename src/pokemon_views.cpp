@@ -1181,6 +1181,53 @@ void drawPartyStrip() {
   }
 }
 
+// Capture odds, in whole percent, for one throw of `ball` at the enemy as it
+// stands: pokered engine/items/item_effects.asm (ItemUseBall), evaluated
+// exactly over the game's two random draws. Rand1 is uniform on [0, r1Max]
+// (255 Poke, 200 Great, 150 Ultra/Safari); Status (0, 12 for burn/paralysis/
+// poison, 25 for sleep/freeze) above Rand1 catches outright; Rand1 - Status
+// above the catch rate fails; otherwise W = floor(floor(MaxHP*255/F) /
+// max(floor(HP/4), 1)) with F = 8 for a Great Ball and 12 for the rest.
+// W > 255 catches outright, else Rand2 on [0, 255] must not exceed W.
+enum class Ball : uint8_t { POKE, GREAT, ULTRA };
+
+int catchPercent(const BattleMon &e, Ball ball) {
+  int r1Max = ball == Ball::POKE ? 255 : (ball == Ball::GREAT ? 200 : 150);
+  int factor = ball == Ball::GREAT ? 8 : 12;
+  int status = 0;
+  if ((e.status & 0x07) || (e.status & 0x20)) {
+    status = 25;   // asleep or frozen
+  } else if (e.status & (0x08 | 0x10 | 0x40)) {
+    status = 12;   // poisoned, burned or paralysed
+  }
+  long quarter = e.hp / 4;
+  if (quarter < 1) quarter = 1;
+  long w = ((long)e.maxHp * 255 / factor) / quarter;
+  // Probability scaled by 256 * (r1Max + 1) to stay in integers.
+  long num = 0;
+  for (int r1 = 0; r1 <= r1Max; r1++) {
+    if (status > r1) {
+      num += 256;
+    } else if (r1 - status > (int)e.catchRate) {
+      continue;
+    } else if (w > 255) {
+      num += 256;
+    } else {
+      num += w + 1;
+    }
+  }
+  long den = 256L * (r1Max + 1);
+  return (int)((num * 100 + den / 2) / den);
+}
+
+// The Gen 1 font has no percent sign, so the odds read "BALL  92 PCT" like
+// the encounter tables' "GRASS 10 PCT".
+String oddsText(const char *label, int percent) {
+  char buf[20];
+  snprintf(buf, sizeof(buf), "%s%3d PCT", label, percent);
+  return String(buf);
+}
+
 void viewBattle() {
   drawTopBar("BATTLE");
   BattleMon enemy, mine;
@@ -1205,7 +1252,11 @@ void viewBattle() {
     drawHpNumbers(252, 76, 2, enemy.hp, enemy.maxHp);
     gbgfx::printGb(20, 104, typeLine(enemy.type1, enemy.type2), 2, false);
     if (!trainer) {
-      gbgfx::printGb(276, 104, "CATCH " + rjust(enemy.catchRate, 3), 2, false);
+      // Live capture odds at this HP and status; the raw catch rate moves
+      // down a row. One Poke Ball here, Great and Ultra under the stats.
+      gbgfx::printGb(276, 104, oddsText("BALL  ", catchPercent(enemy, Ball::POKE)),
+                     2, false);
+      gbgfx::printGb(276, 128, "RATE " + rjust(enemy.catchRate, 3), 2, false);
     }
 
     if (trainer) {
@@ -1235,6 +1286,12 @@ void viewBattle() {
       snprintf(line, sizeof(line), "SPD %u SPC %u", (unsigned)bs[3],
                (unsigned)bs[4]);
       gbgfx::printGb(20, 176, line, 2, false);
+    }
+    if (!trainer) {
+      gbgfx::printGb(20, 200,
+                     oddsText("GREAT ", catchPercent(enemy, Ball::GREAT)) + "  " +
+                         oddsText("ULTRA ", catchPercent(enemy, Ball::ULTRA)),
+                     2, false);
     }
   }
 
