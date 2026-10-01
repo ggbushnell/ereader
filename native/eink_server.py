@@ -28,6 +28,7 @@ frame_png = b""
 frame_lock = threading.Lock()
 pad_event = threading.Event()
 ARGS = None
+SERVER_ID = str(int(time.time()))   # changes on every restart; the page reloads when it sees a new one
 
 
 def fetch_wram():
@@ -130,10 +131,11 @@ function showToast(t){if(!t||t===lastToast)return;lastToast=t;toast.textContent=
 function pad(d){fetch('/pad?dir='+d,{method:'POST'}).then(tick)}
 function toggleSize(){img.classList.toggle('big')}
 document.addEventListener('keydown',e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;const m={ArrowRight:'next',r:'next',R:'next',ArrowLeft:'prev',l:'prev',L:'prev',ArrowUp:'terrain',u:'terrain',U:'terrain'};if(m[e.key]){e.preventDefault();pad(m[e.key])}});
-let last=-1;
+let last=-1,serverId=null;
 async function tick(){
   try{
     const r=await fetch('/state.json',{cache:'no-store'});const st=await r.json();
+    if(serverId===null)serverId=st.server;else if(st.server!==serverId){location.reload();return}
     if(st.renders!==last){last=st.renders;img.src='/frame.png?'+last}
     const d=st.decode||{};const age=st.last_wram_at?Math.round(Date.now()/1000-st.last_wram_at):null;
     s.innerHTML=(st.wram_ok?'':'<span class=warn>no WRAM from the stub server yet — start Pokémon Red at '+st.stub+'</span>\\n')
@@ -173,7 +175,7 @@ class H(BaseHTTPRequestHandler):
                 buf = io.BytesIO(); im.save(buf, format="PNG"); png = buf.getvalue()
             return self.send(200, "image/png", png)
         if p == "/state.json":
-            st = dict(state); st["stub"] = ARGS.stub
+            st = dict(state); st["stub"] = ARGS.stub; st["server"] = SERVER_ID
             return self.send(200, "application/json", json.dumps(st).encode())
         self.send(404, "text/plain", b"not found")
 
