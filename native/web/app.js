@@ -128,7 +128,7 @@
           </div>
         </div>
         <div class="side">
-          ${m ? `<img class="big" src="/assets/sprites/back/${pad3(d.party[m.slot] ? d.party[m.slot].dex : 0)}.png" alt="">
+          ${m ? `<img class="big" src="/assets/sprites/front/${pad3(d.party[m.slot] ? d.party[m.slot].dex : 0)}.png" alt="">
           <div style="flex:1;min-width:0">
             <h3>${esc(m.nick)} <small>L${m.level} · ${esc(m.types[0])}${m.types[1] !== m.types[0] ? '/' + esc(m.types[1]) : ''}</small></h3>
             ${hpBar(m)}
