@@ -135,6 +135,8 @@
             <div class="stats">
               <div><span>ATK</span><b>${m.stats.atk}</b></div><div><span>DEF</span><b>${m.stats.def}</b></div><div><span>SPD</span><b>${m.stats.spd}</b></div><div><span>SPC</span><b>${m.stats.spc}</b></div>
             </div>
+            <div style="margin-top:6px"><span class="hint" style="display:inline">Weak to</span> ${chips(m.weakTo || [], 'bad')}</div>
+            <div><span class="hint" style="display:inline">Resists</span> ${chips(m.resists || [], 'good')} ${(m.immuneTo || []).length ? '<span class="hint" style="display:inline">Immune</span> ' + chips(m.immuneTo, 'good') : ''}</div>
             <div class="hint" style="margin-top:8px">Your moves (badges against ${esc(e.nick)})</div>
             ${movesTable(m.moves)}
           </div>` : '<p class="empty">No Pokémon out.</p>'}

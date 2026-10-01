@@ -229,6 +229,9 @@ void printViewJson(int page, bool terrain) {
              expToNextLevel(slot, mine.species, mine.level), hpFill(mine.hp, mine.maxHp),
              hpColor(hpFill(mine.hp, mine.maxHp)));
     o += b;
+    Matchups mm = matchups(mine.type1, mine.type2);
+    o += "\"weakTo\":" + typeNames(mm.weak, mm.nWeak) + ",\"resists\":" + typeNames(mm.resist, mm.nResist) +
+         ",\"immuneTo\":" + typeNames(mm.immune, mm.nImmune) + ",";
     o += "\"moves\":" + movesJson(mine.moves, mine.pp, mine.type1, mine.type2,
                                   haveEnemy ? enemy.type1 : 0xFF, haveEnemy ? enemy.type2 : 0xFF) + "},";
   }
