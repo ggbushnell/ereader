@@ -34,6 +34,7 @@ const Def DEFS[] = {
     {"HM03 SURF", "THE SECRET HOUSE IN THE SAFARI", Kind::EVENT, 2176, true},
     {"VOLCANO BADGE", "BEAT BLAINE ON CINNABAR ISLAND", Kind::EVENT, 665, true},
     {"EARTH BADGE", "BEAT GIOVANNI IN VIRIDIAN GYM", Kind::EVENT, 81, true},
+    {"RIVAL REMATCH", "HE BLOCKS ROUTE 22 TO THE LEAGUE", Kind::EVENT, 1318, true},
     {"LORELEI", "ELITE FOUR 1 AT INDIGO PLATEAU", Kind::EVENT, 2273, true},
     {"BRUNO", "ELITE FOUR 2 AT INDIGO PLATEAU", Kind::EVENT, 2281, true},
     {"AGATHA", "ELITE FOUR 3 AT INDIGO PLATEAU", Kind::EVENT, 2289, true},
@@ -43,6 +44,7 @@ const Def DEFS[] = {
     {"MEWTWO", "CERULEAN CAVE AFTER THE LEAGUE", Kind::EVENT, 2241, true},
     // ---- milestones
     {"FIRST CATCH", "CATCH A SECOND POKEMON", Kind::DEX_OWNED, 2, false},
+    {"RIVAL ROUTE22", "WEST OF VIRIDIAN, BEFORE BROCK", Kind::EVENT, 1317, false},
     {"FULL PARTY", "CARRY SIX POKEMON", Kind::PARTY, 6, false},
     {"SEEN 25", "SEE 25 SPECIES", Kind::DEX_SEEN, 25, false},
     {"SEEN 75", "SEE 75 SPECIES", Kind::DEX_SEEN, 75, false},
@@ -72,8 +74,11 @@ const int N = sizeof(DEFS) / sizeof(DEFS[0]);
 //   4  2  player id (little endian) the stamps belong to
 //   6  2  index of the last achievement earned, 0xFFFF none
 //   8  4  play time in seconds when it was earned
-//  12  N*2 stamps: play time minutes when first seen, 0xFFFF not yet
-const char MAGIC[4] = {'E', 'A', 'C', 'H'};
+//  12  2  number of stamps that follow; a file written for a different table
+//         is started over (the stamps would belong to the wrong rows)
+//  14  N*2 stamps: play time minutes when first seen, 0xFFFF not yet
+const char MAGIC[4] = {'E', 'A', 'C', '2'};
+const int HEADER_BYTES = 14;
 const uint16_t NONE = 0xFFFF;
 
 uint16_t stamps[N];
@@ -125,7 +130,7 @@ void save() {
   LittleFS.mkdir(GAMES_AUX_DIR);
   fs::File f = LittleFS.open(GAMES_ACHIEVEMENTS_PATH, "w");
   if (!f) return;
-  uint8_t head[12];
+  uint8_t head[HEADER_BYTES];
   memcpy(head, MAGIC, 4);
   head[4] = (uint8_t)fileId;
   head[5] = (uint8_t)(fileId >> 8);
@@ -135,6 +140,8 @@ void save() {
   head[9] = (uint8_t)(lastPlaySec >> 8);
   head[10] = (uint8_t)(lastPlaySec >> 16);
   head[11] = (uint8_t)(lastPlaySec >> 24);
+  head[12] = (uint8_t)N;
+  head[13] = (uint8_t)(N >> 8);
   f.write(head, sizeof(head));
   for (int i = 0; i < N; i++) {
     uint8_t s[2] = {(uint8_t)stamps[i], (uint8_t)(stamps[i] >> 8)};
@@ -180,8 +187,9 @@ void load() {
   fileExisted = false;
   fs::File f = LittleFS.open(GAMES_ACHIEVEMENTS_PATH, "r");
   if (!f) return;
-  uint8_t head[12];
-  if (f.read(head, 12) != 12 || memcmp(head, MAGIC, 4) != 0) {
+  uint8_t head[HEADER_BYTES];
+  if (f.read(head, HEADER_BYTES) != HEADER_BYTES || memcmp(head, MAGIC, 4) != 0 ||
+      ((int)head[12] | ((int)head[13] << 8)) != N) {
     f.close();
     return;
   }
