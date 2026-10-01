@@ -4,6 +4,7 @@
 //   pokeview --root stub_games --wram wram.bin --all out_prefix   (home, inventory, terrain, battle-if-any)
 //   pokeview --root stub_games --wram wram.bin --decode            (print the decoded state as JSON)
 //   pokeview --root stub_games --wram wram.bin --view-json [--page N] [--terrain]   (every fact the views draw, as JSON)
+//   pokeview --root stub_games --dump-assets <dir>                 (the pack's graphics as coloured PNGs)
 //
 // The root is the stub server's --root (its "flash"); the pack is read from
 // <root>/games/aux/pokered.pack exactly where the firmware looks, so the stub
@@ -24,6 +25,7 @@
 #include <cstring>
 
 void printViewJson(int page, bool terrain);   // viewjson.cpp
+int dumpAssets(const std::string &dir);       // assets.cpp
 
 static bool loadWram(const char *path) {
   FILE *f = fopen(path, "rb");
@@ -122,7 +124,7 @@ static void decodeJson() {
 }
 
 int main(int argc, char **argv) {
-  std::string root = ".", wram, out, allPrefix;
+  std::string root = ".", wram, out, allPrefix, assetsDir;
   int page = 0;
   bool terrain = false, decode = false, viewJson = false;
   for (int i = 1; i < argc; i++) {
@@ -136,13 +138,15 @@ int main(int argc, char **argv) {
     else if (a == "--terrain") terrain = true;
     else if (a == "--decode") decode = true;
     else if (a == "--view-json") viewJson = true;
+    else if (a == "--dump-assets") next(assetsDir);
     else { fprintf(stderr, "pokeview: unknown argument %s\n", a.c_str()); return 2; }
   }
-  if (wram.empty()) { fprintf(stderr, "pokeview: --wram is required\n"); return 2; }
+  if (wram.empty() && assetsDir.empty()) { fprintf(stderr, "pokeview: --wram is required\n"); return 2; }
 
   LittleFS.setRoot(root);
   if (!pack::open()) fprintf(stderr, "pokeview: no pack at %s/%s (views fall back to NO PACK screen)\n", root.c_str(), GAMES_PACK_PATH);
   achievements::load();
+  if (!assetsDir.empty()) return dumpAssets(assetsDir) > 0 ? 0 : 1;
   if (!loadWram(wram.c_str())) return 1;
 
   if (decode) { decodeJson(); return 0; }

@@ -5,10 +5,10 @@ cd "$(dirname "$0")"
 E=..
 c++ -std=c++17 -O2 -Wall -Wno-unused-function \
   -I shim -I "$E/include" -I "$E/src" \
-  main.cpp ui_native.cpp viewjson.cpp \
+  main.cpp ui_native.cpp viewjson.cpp assets.cpp \
   "$E/src/pokemon_state.cpp" "$E/src/gbgfx.cpp" "$E/src/pokemon_views.cpp" "$E/src/pack.cpp" \
   "$E/src/pokemon_achievements.cpp" "$E/src/pokemon_data.cpp" \
-  -o pokeview
+  -lz -o pokeview
 # The firmware reads the pack at /games/aux/pokered.pack; the stub server's
 # root keeps it at aux/pokered.pack. One symlink lets both read the same file.
 GAMES_ROOT="${GAMES_ROOT:-$HOME/Projects/wifi-ereader/stub_games}"

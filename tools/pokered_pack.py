@@ -921,6 +921,7 @@ class Builder(object):
         # Growth rate per dex number, as the GROWTH_* index into the game's
         # GrowthRateTable (data/growth_rates.asm), for experience-to-next-level.
         pack.add("growth", bytes(growth))
+        self.build_palettes(pack)
 
         # Items, indexed straight by item id so the sparse TM and HM ids work.
         names = parse_string_list(self.p("data/items/names.asm"))
@@ -1047,6 +1048,55 @@ class Builder(object):
             raise ValueError("type names: %d entries, expected %d" %
                              (len(out), self.num_types))
         return out
+
+    # -- Super Game Boy palettes -----------------------------------------
+    #
+    # The SGB-enhanced ROM colours each species' picture with one of ten
+    # four-colour palettes, and areas, the town map and the trainer card with
+    # others. constants/palette_constants.asm gives the PAL_* order,
+    # data/sgb/sgb_palettes.asm the colours (5 bits per channel) and
+    # data/pokemon/palettes.asm the species -> palette table in dex order
+    # (entry 0 is MissingNo). Stored so a colour front end tints exactly as
+    # the game would.
+
+    def build_palettes(self, pack):
+        names = []
+        block = 0
+        for line in lines_of(self.p("constants/palette_constants.asm")):
+            t = line.strip()
+            if t.startswith("const_def"):
+                block += 1
+                continue
+            m = re.match(r"const\s+(PAL_\w+)", t)
+            if m and block == 2:
+                names.append(m.group(1))
+        rgb_by_name = {}
+        # the palette's name is only in the trailing comment, so read raw lines
+        with open(self.p("data/sgb/sgb_palettes.asm"), encoding="utf-8") as fd:
+            raw_lines = fd.read().splitlines()
+        for line in raw_lines:
+            m = re.match(r"\s*RGB\s+([\d,\s]+);\s*(PAL_\w+)", line)
+            if not m:
+                continue
+            vals = [int(x) for x in m.group(1).replace(" ", "").strip(",").split(",")]
+            if len(vals) == 12:
+                rgb_by_name[m.group(2)] = vals
+        missing = [n for n in names if n not in rgb_by_name]
+        if missing:
+            raise ValueError("palettes without colours: %s" % ", ".join(missing))
+        blob = bytearray()
+        for n in names:
+            blob += bytes(v * 255 // 31 for v in rgb_by_name[n])
+        pack.add("sgb_palettes", bytes(blob))
+        pack.add("sgb_pal_names", strtab(names))
+        mon = []
+        for line in lines_of(self.p("data/pokemon/palettes.asm")):
+            m = re.match(r"\s*db\s+(PAL_\w+)", line)
+            if m:
+                mon.append(names.index(m.group(1)))
+        if len(mon) != 152:
+            raise ValueError("expected 152 species palettes, got %d" % len(mon))
+        pack.add("mon_palettes", bytes(mon))
 
     # -- wild encounters -------------------------------------------------
 

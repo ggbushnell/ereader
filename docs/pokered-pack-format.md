@@ -591,3 +591,16 @@ the `GROWTH_*` index into the game's `GrowthRateTable` (`data/growth_rates.asm`,
 rows Medium Fast, Slightly Fast, Slightly Slow, Medium Slow, Fast, Slow). The
 firmware carries the six formulas and uses this to show experience to the
 next level on the Battle view.
+
+## sgb_palettes, sgb_pal_names, mon_palettes
+
+The Super Game Boy colours the SGB-enhanced ROM uses, for a colour front end
+(the e-paper never reads them).
+
+- `sgb_palettes`: one 12 byte record per `PAL_*` constant in
+  `constants/palette_constants.asm` order (`PAL_ROUTE` first, 37 in this
+  checkout): four colours, RGB, 8 bits per channel scaled from the ROM's 5
+  (`v * 255 / 31`). Colour 0 is the lightest (paper), colour 3 the darkest.
+- `sgb_pal_names`: STRTAB of the constant names in the same order.
+- `mon_palettes`: 152 bytes, index = dex number (0 = MissingNo), each the
+  palette index of that species' picture, from `data/pokemon/palettes.asm`.
