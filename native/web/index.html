@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pokémon Companion</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand">Companion</div>
+  <div class="facts" id="facts"></div>
+  <div class="status" id="status">connecting…</div>
+</header>
+
+<main id="grid">
+  <section class="card" id="card-battle" hidden></section>
+  <section class="card" id="card-party"><h2>Party</h2><div class="body"></div></section>
+  <section class="card" id="card-location"><h2>Where</h2><div class="body"></div></section>
+  <section class="card" id="card-encounters"><h2>Wild here</h2><div class="body"></div></section>
+  <section class="card" id="card-pickups"><h2>Items here</h2><div class="body"></div></section>
+  <section class="card" id="card-awards"><h2>Achievements</h2><div class="body"></div></section>
+  <section class="card" id="card-bag"><h2>Bag &amp; PC</h2><div class="body"></div></section>
+  <section class="card small" id="card-device"><h2>E-paper</h2><div class="body"><img id="frame" src="/frame.png" alt="e-paper frame"></div></section>
+</main>
+
+<div id="toast"></div>
+<script src="/web/app.js"></script>
+</body>
+</html>

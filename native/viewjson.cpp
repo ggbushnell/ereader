@@ -32,13 +32,19 @@ std::string typeNames(const uint8_t *ids, int n) {
   return o + "]";
 }
 
+uint8_t iconOf(uint8_t dex) {
+  uint8_t icon = 0;
+  if (dex) pack::read("icon_map", (size_t)dex - 1, &icon, 1);
+  return icon;
+}
+
 std::string monJson(const pokemon::Mon &m, int slot) {
   uint8_t dex = dexOf(m.species);
   char b[512];
   snprintf(b, sizeof(b),
-           "{\"slot\":%d,\"nick\":%s,\"species\":%s,\"dex\":%u,\"level\":%u,\"hp\":%u,\"maxHp\":%u,"
+           "{\"slot\":%d,\"nick\":%s,\"species\":%s,\"dex\":%u,\"icon\":%u,\"level\":%u,\"hp\":%u,\"maxHp\":%u,"
            "\"status\":%s,\"types\":[%s,%s],\"hpFill\":%d,\"hpColor\":%d,\"expToNext\":%ld}",
-           slot, js(String(m.nick)).c_str(), js(speciesNameByDex(dex)).c_str(), dex, m.level, m.hp,
+           slot, js(String(m.nick)).c_str(), js(speciesNameByDex(dex)).c_str(), dex, iconOf(dex), m.level, m.hp,
            m.maxHp, js(statusText(m.status, m.hp == 0)).c_str(), js(typeName(m.type1)).c_str(),
            js(typeName(m.type2)).c_str(), hpFill(m.hp, m.maxHp), hpColor(hpFill(m.hp, m.maxHp)),
            expToNextLevel(slot, m.species, m.level));
@@ -92,11 +98,26 @@ void printViewJson(int page, bool terrain) {
   std::string visited = "[";
   for (uint8_t c = 0; c < 11; c++) visited += std::string(c ? "," : "") + (pokemon::townVisited(c) ? "true" : "false");
   visited += "]";
+  // Town map cells: the entries are the game's sprite coordinates; the tile
+  // is two columns right and one row down (see the Home view's cursor maths).
+  uint8_t te[3];
+  int townX = -1, townY = -1;
+  if (pack::read("townmap_entries", (size_t)map * 3, te, 3) == 3) { townX = te[0] % 16 + 2; townY = te[1] % 16 + 1; }
+  std::string towns = "[";
+  for (uint8_t c = 0; c < 11; c++) {
+    uint8_t t2[3];
+    int tx = -1, ty = -1;
+    if (pack::read("townmap_entries", (size_t)c * 3, t2, 3) == 3) { tx = t2[0] % 16 + 2; ty = t2[1] % 16 + 1; }
+    snprintf(b, sizeof(b), "%s{\"map\":%u,\"name\":%s,\"tx\":%d,\"ty\":%d,\"visited\":%s}", c ? "," : "", c,
+             js(mapLabel(c)).c_str(), tx, ty, pokemon::townVisited(c) ? "true" : "false");
+    towns += b;
+  }
+  towns += "]";
   snprintf(b, sizeof(b),
            "\"location\":{\"map\":%u,\"label\":%s,\"x\":%u,\"y\":%u,\"facing\":%u,\"mapW\":%u,\"mapH\":%u,"
-           "\"visitedTowns\":%s,\"repelSteps\":%u},",
+           "\"townX\":%d,\"townY\":%d,\"visitedTowns\":%s,\"towns\":%s,\"repelSteps\":%u},",
            map, js(mapLabel(map)).c_str(), pokemon::playerX(), pokemon::playerY(), pokemon::playerFacing(),
-           mi.w, mi.h, visited.c_str(), pokemon::repelSteps());
+           mi.w, mi.h, townX, townY, visited.c_str(), towns.c_str(), pokemon::repelSteps());
   o += b;
 
   // ---- party
@@ -176,13 +197,13 @@ void printViewJson(int page, bool terrain) {
     Matchups mu = matchups(enemy.type1, enemy.type2);
     int dvSum = enemy.dvAtk + enemy.dvDef + enemy.dvSpd + enemy.dvSpc;
     snprintf(b, sizeof(b),
-             "\"enemy\":{\"nick\":%s,\"species\":%s,\"dex\":%u,\"level\":%u,\"hp\":%u,\"maxHp\":%u,\"status\":%s,"
+             "\"enemy\":{\"nick\":%s,\"species\":%s,\"dex\":%u,\"icon\":%u,\"level\":%u,\"hp\":%u,\"maxHp\":%u,\"status\":%s,"
              "\"types\":[%s,%s],\"owned\":%s,\"seen\":%s,\"catchRate\":%u,"
              "\"catchOdds\":{\"poke\":%d,\"great\":%d,\"ultra\":%d},"
              "\"baseStats\":{\"hp\":%u,\"atk\":%u,\"def\":%u,\"spd\":%u,\"spc\":%u},"
              "\"dv\":{\"atk\":%u,\"def\":%u,\"spd\":%u,\"spc\":%u,\"hp\":%u,\"sum\":%d},"
              "\"hpFill\":%d,\"hpColor\":%d,",
-             js(String(enemy.nick)).c_str(), js(speciesNameByDex(dex)).c_str(), dex, enemy.level, enemy.hp,
+             js(String(enemy.nick)).c_str(), js(speciesNameByDex(dex)).c_str(), dex, iconOf(dex), enemy.level, enemy.hp,
              enemy.maxHp, js(statusText(enemy.status, enemy.hp == 0)).c_str(), js(typeName(enemy.type1)).c_str(),
              js(typeName(enemy.type2)).c_str(), pokemon::dexOwnedBit(dex) ? "true" : "false",
              pokemon::dexSeenBit(dex) ? "true" : "false", enemy.catchRate, catchPercent(enemy, Ball::POKE),

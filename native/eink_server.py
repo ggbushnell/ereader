@@ -3,7 +3,10 @@
 
 Polls the stub games server for the Game Boy work RAM mirror, renders the
 firmware's own companion views through ./pokeview, and serves the frame as a
-680x920 PNG on a page that refreshes once a second. The controls follow the
+680x920 PNG on a page that refreshes once a second. Also serves /web/, the
+browser-native companion: the same facts as JSON (/view.json, from pokeview
+--view-json) laid out responsively with the pack's graphics in their Super
+Game Boy colours (/assets/, dumped once by pokeview --dump-assets). The controls follow the
 hint strip the views draw (the device's pad labels): R next page, L back,
 U terrain on/off. Right/Left/Up arrows and the letters r, l, u do the same.
 
@@ -25,7 +28,10 @@ state = {
     "render_ms": 0, "renders": 0, "decode": {}, "error": "", "view": "no snapshot",
 }
 frame_png = b""
+view_json = b"{}"
 frame_lock = threading.Lock()
+WEB_DIR = os.path.join(HERE, "web")
+ASSETS_DIR = os.path.join(HERE, "out", "assets")
 pad_event = threading.Event()
 ARGS = None
 SERVER_ID = str(int(time.time()))   # changes on every restart; the page reloads when it sees a new one
@@ -62,6 +68,14 @@ def render(wram, page, terrain):
         state["decode"] = json.loads(d.stdout)
     except Exception:
         state["decode"] = {}
+    vcmd = [POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--view-json", "--page", str(page)]
+    if terrain:
+        vcmd.append("--terrain")
+    v = subprocess.run(vcmd, capture_output=True)
+    global view_json
+    if v.returncode == 0 and v.stdout.strip().startswith(b"{"):
+        with frame_lock:
+            view_json = v.stdout
     im = Image.open(pgm_path).convert("1")
     buf = io.BytesIO()
     im.save(buf, format="PNG", optimize=True)
@@ -177,7 +191,40 @@ class H(BaseHTTPRequestHandler):
         if p == "/state.json":
             st = dict(state); st["stub"] = ARGS.stub; st["server"] = SERVER_ID
             return self.send(200, "application/json", json.dumps(st).encode())
+        if p == "/view.json":
+            with frame_lock:
+                body = view_json
+            # the page needs the server id (reload on restart) and the snapshot age
+            extra = (',"server":"%s","renders":%d,"wramOk":%s,"snapshotAge":%d}' % (
+                SERVER_ID, state["renders"], "true" if state["wram_ok"] else "false",
+                int(time.time() - state["last_wram_at"]) if state["last_wram_at"] else -1)).encode()
+            body = body.rstrip().rstrip(b"}") + extra if body.strip() != b"{}" else b'{"server":"%s"}' % SERVER_ID.encode()
+            return self.send(200, "application/json", body)
+        if p == "/web" or p == "/web/":
+            return self.send_static(os.path.join(WEB_DIR, "index.html"), "text/html; charset=utf-8")
+        if p.startswith("/web/"):
+            return self.send_static(os.path.join(WEB_DIR, os.path.normpath(p[5:]).lstrip("/")), None)
+        if p.startswith("/assets/"):
+            return self.send_static(os.path.join(ASSETS_DIR, os.path.normpath(p[8:]).lstrip("/")), None)
         self.send(404, "text/plain", b"not found")
+
+    TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".css": "text/css",
+             ".png": "image/png", ".json": "application/json", ".svg": "image/svg+xml"}
+
+    def send_static(self, path, ctype):
+        root = WEB_DIR if path.startswith(WEB_DIR) else ASSETS_DIR
+        if not os.path.abspath(path).startswith(root) or not os.path.isfile(path):
+            return self.send(404, "text/plain", b"not found")
+        if ctype is None:
+            ctype = self.TYPES.get(os.path.splitext(path)[1], "application/octet-stream")
+        with open(path, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store" if root == WEB_DIR else "max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         p, _, q = self.path.partition("?")
@@ -207,10 +254,14 @@ def main():
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
     if not os.path.exists(POKEVIEW):
         sys.exit("eink_server: build ./pokeview first (./build.sh)")
+    if not os.path.isdir(os.path.join(ASSETS_DIR, "sprites")):
+        print("dumping the pack's graphics to", ASSETS_DIR, flush=True)
+        subprocess.run([POKEVIEW, "--root", ARGS.root, "--dump-assets", ASSETS_DIR], capture_output=True)
     threading.Thread(target=poll_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", ARGS.port), H)
     ip = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True).stdout.strip() or "?"
     print(f"companion e-ink page: http://localhost:{ARGS.port}/   (LAN: http://{ip}:{ARGS.port}/)", flush=True)
+    print(f"browser companion:    http://localhost:{ARGS.port}/web/", flush=True)
     print(f"watching {ARGS.stub}/api/wram every {ARGS.interval}s", flush=True)
     srv.serve_forever()
 
