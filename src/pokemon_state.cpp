@@ -94,6 +94,7 @@ const int BAT_TYPE1 = 5;
 const int BAT_TYPE2 = 6;
 const int BAT_CATCH_RATE = 7;
 const int BAT_MOVES = 8;
+const int BAT_DVS = 12;    // atk:def, spd:spc nibbles
 const int BAT_LEVEL = 14;
 const int BAT_MAX_HP = 15;
 const int BAT_ATTACK = 17;
@@ -400,6 +401,15 @@ bool readBattleStruct(uint16_t base, uint16_t nickAddr, BattleMon &out) {
   for (int i = 0; i < 4; i++) {
     out.moves[i] = rd(base + BAT_MOVES + i);
     out.pp[i] = rd(base + BAT_PP + i) & 0x3F;
+  }
+  {
+    uint8_t d0 = rd(base + BAT_DVS), d1 = rd(base + BAT_DVS + 1);
+    out.dvAtk = d0 >> 4;
+    out.dvDef = d0 & 0x0F;
+    out.dvSpd = d1 >> 4;
+    out.dvSpc = d1 & 0x0F;
+    out.dvHp = (uint8_t)(((out.dvAtk & 1) << 3) | ((out.dvDef & 1) << 2) |
+                         ((out.dvSpd & 1) << 1) | (out.dvSpc & 1));
   }
   out.atk = rdBE(base + BAT_ATTACK);
   out.def = rdBE(base + BAT_DEFENSE);

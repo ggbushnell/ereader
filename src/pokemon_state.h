@@ -86,6 +86,8 @@ struct BattleMon {
   uint16_t def;
   uint16_t spd;
   uint16_t spc;
+  uint8_t dvAtk, dvDef, dvSpd, dvSpc;   // the hidden 0..15 "genes"
+  uint8_t dvHp;                         // assembled from the low bit of each
   char nick[12];
 };
 

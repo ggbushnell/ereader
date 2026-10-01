@@ -1303,15 +1303,25 @@ void viewBattle() {
       gbgfx::printGb(x + 16, 128, rjust(dex, 3) + "  " + flag, 2, false);
     }
 
+    // Species base stats on one row, the individual's DVs under them in the
+    // same columns (0..15, average 7.5; 13 and up inverted). Same species,
+    // same level, the DVs are the whole difference, so this is "is this one
+    // worth catching" at a glance. Base HP is dropped to make the row fit
+    // beside the picture; the HP DV is derived from the other four.
     uint8_t bs[9];
     if (baseStats(dex, bs)) {
       char line[48];
-      snprintf(line, sizeof(line), "HP %u ATK %u DEF %u", (unsigned)bs[0],
-               (unsigned)bs[1], (unsigned)bs[2]);
+      snprintf(line, sizeof(line), "ATK%3u DEF%3u SPD%3u SPC%3u", (unsigned)bs[1],
+               (unsigned)bs[2], (unsigned)bs[3], (unsigned)bs[4]);
       gbgfx::printGb(20, 152, line, 2, false);
-      snprintf(line, sizeof(line), "SPD %u SPC %u", (unsigned)bs[3],
-               (unsigned)bs[4]);
-      gbgfx::printGb(20, 176, line, 2, false);
+    }
+    if (!trainer) {
+      gbgfx::printGb(20, 176, "DV", 2, false);
+      const uint8_t dv[4] = {enemy.dvAtk, enemy.dvDef, enemy.dvSpd, enemy.dvSpc};
+      for (int i = 0; i < 4; i++) {
+        // Under the stat number: column 4 of each 7 cell "ATK 60 " group.
+        gbgfx::printGb(20 + 16 * (7 * i + 4), 176, rjust(dv[i], 2), 2, dv[i] >= 13);
+      }
     }
     if (!trainer) {
       gbgfx::printGb(20, 200,
