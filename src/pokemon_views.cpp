@@ -487,6 +487,16 @@ void drawTownMap() {
     }
   }
 
+  // Towns already visited (the game's Fly list) get a filled 8x8 block inside
+  // their map square, so "where have I been" reads off the map.
+  for (uint8_t city = 0; city < 11; city++) {
+    if (!pokemon::townVisited(city)) continue;
+    uint8_t te[3];
+    if (pack::read(S_TOWN_ENTRIES, (size_t)city * 3, te, 3) != 3) continue;
+    int tx = te[0] % 16, ty = te[1] % 16;
+    ui::gfx().fillRect(180 + 16 * tx + 4, 32 + 16 * ty + 4, 8, 8, ui::INK_BLACK);
+  }
+
   // The player's cell, from the town map entry for the current map (an indoor
   // map already carries its outdoor parent's cell in the pack).
   uint8_t entry[3];
@@ -846,7 +856,10 @@ int mergeSlots(const uint8_t *slots, Encounter *out) {
 }
 
 // `CATERPIE   L  3  40`: name 10, space, L, a three cell level field that can
-// hold a range, space, odds 2. Eighteen cells.
+// hold a range, space, odds 2. Eighteen cells. The space after the name
+// carries the Pokedex mark: a filled disc when the species is owned, a ring
+// when only seen, nothing otherwise, so "have I caught this before?" is
+// answered on the map view before the fight starts.
 String encounterRow(const Encounter &e) {
   String level;
   if (e.levelLo == e.levelHi) {
@@ -858,6 +871,26 @@ String encounterRow(const Encounter &e) {
   }
   return ljust(speciesName(e.species), 10) + " L" + level + " " +
          rjust(e.odds, 2);
+}
+
+// A disc of radius 3 (or a ring) centred in the 16 px cell at (x, y).
+void drawDexMark(int x, int y, bool owned, bool seen) {
+  if (!owned && !seen) return;
+  Adafruit_GFX &g = ui::gfx();
+  static const int HALF[7] = {1, 2, 3, 3, 3, 2, 1};
+  int cx = x + 7, cy = y + 7;
+  for (int i = 0; i < 7; i++) {
+    int dy = i - 3;
+    g.fillRect(cx - HALF[i], cy + dy, 2 * HALF[i] + 1, 1, ui::INK_BLACK);
+  }
+  if (!owned) g.fillRect(cx - 1, cy - 1, 3, 3, ui::INK_WHITE);   // ring = seen
+}
+
+void drawEncounterRow(int x, int y, const Encounter &e) {
+  gbgfx::printGb(x, y, encounterRow(e), 2, false);
+  uint8_t dex = dexOf(e.species);
+  if (!dex) return;
+  drawDexMark(x + 10 * 16, y, pokemon::dexOwnedBit(dex), pokemon::dexSeenBit(dex));
 }
 
 struct MapItem {
@@ -1045,8 +1078,7 @@ void viewTerrain() {
                      false);
       for (int i = 0; i < ng && row < 16; i++) {
         row++;
-        gbgfx::printGb(encInner, 584 + 16 * row, encounterRow(grass[i]), 2,
-                       false);
+        drawEncounterRow(encInner, 584 + 16 * row, grass[i]);
       }
       if (nw) {
         if (twoColumns) {
@@ -1054,7 +1086,7 @@ void viewTerrain() {
                          "WATER " + rjust((wild[21] * 100 + 128) / 256, 3) + " PCT", 2,
                          false);
           for (int i = 0; i < nw && i < 17; i++) {
-            gbgfx::printGb(col2, 600 + 16 * i, encounterRow(water[i]), 2, false);
+            drawEncounterRow(col2, 600 + 16 * i, water[i]);
           }
         } else {
           row += 2;
@@ -1069,8 +1101,7 @@ void viewTerrain() {
                 break;
               }
               row++;
-              gbgfx::printGb(encInner, 584 + 16 * row, encounterRow(water[i]),
-                             2, false);
+              drawEncounterRow(encInner, 584 + 16 * row, water[i]);
             }
             if (dropped) {
               gbgfx::printGb(encInner, 856, ".." + String(dropped) + " MORE", 2,

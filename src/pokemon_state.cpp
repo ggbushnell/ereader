@@ -50,6 +50,7 @@ const uint16_t W_NUM_BOX_ITEMS = 0xD53A;
 const uint16_t W_BOX_ITEMS = 0xD53B;
 const uint16_t W_TOGGLEABLE_OBJECT_FLAGS = 0xD5A6;
 const uint16_t W_HIDDEN_ITEM_FLAGS = 0xD6F0;
+const uint16_t W_TOWN_VISITED_FLAGS = 0xD70B;   // flag_array NUM_CITY_MAPS
 const uint16_t W_ENEMY_PARTY_COUNT = 0xD89C;
 const uint16_t W_ENEMY_MONS = 0xD8A4;
 const uint16_t W_DAY_CARE_MON_NAME = 0xDA49;
@@ -477,6 +478,11 @@ bool objectTaken(uint8_t index) {
 bool hiddenItemTaken(uint8_t index) {
   if (index >= HIDDEN_FLAG_BYTES * 8) return false;
   return (rd(W_HIDDEN_ITEM_FLAGS + (uint16_t)(index >> 3)) >> (index & 7)) & 1;
+}
+
+bool townVisited(uint8_t cityMap) {
+  if (cityMap >= 11) return false;
+  return (rd(W_TOWN_VISITED_FLAGS + (uint16_t)(cityMap >> 3)) >> (cityMap & 7)) & 1;
 }
 
 }  // namespace pokemon

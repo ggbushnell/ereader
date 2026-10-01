@@ -179,4 +179,8 @@ uint8_t dayCareLevel();
 bool objectTaken(uint8_t index);
 bool hiddenItemTaken(uint8_t index);
 
+// The Fly list: one bit per city map (map ids 0..10, Pallet Town first), set
+// the first time the player walks into that town.
+bool townVisited(uint8_t cityMap);
+
 }  // namespace pokemon
