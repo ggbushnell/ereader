@@ -154,6 +154,7 @@ uint16_t otId(int index);    // and their 5 digit id
 uint8_t playerFacing();
 
 uint8_t partyMonNumber();    // 0 based party slot that is out in a battle
+uint32_t partyExp(int index); // total experience of party slot `index`
 
 bool enemyBattleMon(BattleMon &out);    // wEnemyMon, false when not in battle
 bool playerBattleMon(BattleMon &out);   // wBattleMon, same

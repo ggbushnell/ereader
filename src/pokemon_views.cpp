@@ -1229,6 +1229,31 @@ String oddsText(const char *label, int percent) {
   return String(buf);
 }
 
+// Experience needed to reach level `n` under growth rate `g`, exactly as
+// CalcExperience does it: floor(a*n^3/b) + c*n^2 + d*n - e, coefficients
+// from data/growth_rates.asm in GROWTH_* order.
+long expForLevel(int g, int n) {
+  static const int T[6][5] = {{1, 1, 0, 0, 0},     {3, 4, 10, 0, 30},
+                              {3, 4, 20, 0, 70},   {6, 5, -15, 100, 140},
+                              {4, 5, 0, 0, 0},     {5, 4, 0, 0, 0}};
+  if (g < 0 || g > 5) g = 0;
+  long n3 = (long)n * n * n;
+  long v = (T[g][0] * n3) / T[g][1] + (long)T[g][2] * n * n + (long)T[g][3] * n - T[g][4];
+  return v < 0 ? 0 : v;
+}
+
+// "NEXT LV   765": experience still needed for the active party member.
+String nextLevelText(int slot, uint8_t internalIndex, uint8_t level) {
+  if (level >= 100) return String("NEXT LV    MAX");
+  uint8_t dex = dexOf(internalIndex);
+  if (!dex) return String();
+  uint8_t g = 0;
+  if (pack::read("growth", (size_t)dex - 1, &g, 1) != 1) return String();
+  long need = expForLevel(g, level + 1) - (long)pokemon::partyExp(slot);
+  if (need < 0) need = 0;
+  return "NEXT LV" + rjust(need, 7);
+}
+
 void viewBattle() {
   drawTopBar("BATTLE");
   BattleMon enemy, mine;
@@ -1313,7 +1338,11 @@ void viewBattle() {
     drawHpBar(132, 272, 3, mine.hp, mine.maxHp, false);
     drawHpNumbers(364, 272, 3, mine.hp, mine.maxHp);
     gbgfx::printGb(132, 304, typeLine(mine.type1, mine.type2), 2, false);
-    gbgfx::printGb(388, 304, speciesName(mine.species), 2, false);
+    // Experience to the next level takes the species name's place: the icon
+    // and the party strip already say what it is.
+    gbgfx::printGb(388, 304,
+                   nextLevelText((int)pokemon::partyMonNumber(), mine.species, mine.level),
+                   2, false);
     {
       char line[48];
       snprintf(line, sizeof(line), "ATK %u DEF %u SPD %u SPC %u",

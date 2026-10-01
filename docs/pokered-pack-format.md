@@ -583,3 +583,11 @@ Checked against `docs/pokemon-aux-display-layout.md`:
 `badges.png` and `map_pallet_town.png`. They are rendered back **out of the
 pack**, not out of the source PNGs, so they exercise the same tile decoding the
 firmware does, with shade 3 drawn black.
+
+## growth
+
+151 bytes, one per dex number (index = dex - 1): the species' growth rate as
+the `GROWTH_*` index into the game's `GrowthRateTable` (`data/growth_rates.asm`,
+rows Medium Fast, Slightly Fast, Slightly Slow, Medium Slow, Fast, Slow). The
+firmware carries the six formulas and uses this to show experience to the
+next level on the Battle view.

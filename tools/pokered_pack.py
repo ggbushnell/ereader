@@ -17,6 +17,10 @@ The byte layout of every section is documented in docs/pokered-pack-format.md.
 """
 
 import argparse
+
+# constants/pokemon_data_constants.asm GROWTH_* order (GrowthRateTable rows).
+GROWTH_IDS = {"MEDIUM_FAST": 0, "SLIGHTLY_FAST": 1, "SLIGHTLY_SLOW": 2,
+              "MEDIUM_SLOW": 3, "FAST": 4, "SLOW": 5}
 import os
 import re
 import struct
@@ -894,6 +898,7 @@ class Builder(object):
 
         stems = self.species_files()
         stats = bytearray()
+        growth = []
         for dex in range(1, 152):
             text = open(self.p("data/pokemon/base_stats", stems[dex] + ".asm"),
                         encoding="utf-8").read()
@@ -909,7 +914,12 @@ class Builder(object):
             catch = int(cm.group(1))
             stats += bytes([hp, atk, df, spd, spc, t1, t2, catch,
                             self.sprite_size[dex]])
+            gm = re.search(r"db\s+GROWTH_(\w+)\s*;\s*growth rate", text)
+            growth.append(GROWTH_IDS[gm.group(1)])
         pack.add("base_stats", stats)
+        # Growth rate per dex number, as the GROWTH_* index into the game's
+        # GrowthRateTable (data/growth_rates.asm), for experience-to-next-level.
+        pack.add("growth", bytes(growth))
 
         # Items, indexed straight by item id so the sparse TM and HM ids work.
         names = parse_string_list(self.p("data/items/names.asm"))

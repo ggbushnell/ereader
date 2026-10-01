@@ -74,6 +74,7 @@ const int MON_TYPE1 = 5;
 const int MON_TYPE2 = 6;
 const int MON_MOVES = 8;   // 4 bytes
 const int MON_OT_ID = 12;  // u16 big endian
+const int MON_EXP = 14;    // u24 big endian
 const int MON_PP = 29;     // 4 bytes
 const int MON_LEVEL = 33;
 const int MON_MAX_HP = 34;  // u16 big endian
@@ -480,6 +481,12 @@ bool objectTaken(uint8_t index) {
 bool hiddenItemTaken(uint8_t index) {
   if (index >= HIDDEN_FLAG_BYTES * 8) return false;
   return (rd(W_HIDDEN_ITEM_FLAGS + (uint16_t)(index >> 3)) >> (index & 7)) & 1;
+}
+
+uint32_t partyExp(int index) {
+  if (index < 0 || index >= (int)partyCount()) return 0;
+  uint16_t base = W_PARTY_MONS + (uint16_t)(index * PARTY_STRUCT) + MON_EXP;
+  return ((uint32_t)rd(base) << 16) | ((uint32_t)rd(base + 1) << 8) | rd(base + 2);
 }
 
 bool townVisited(uint8_t cityMap) {
