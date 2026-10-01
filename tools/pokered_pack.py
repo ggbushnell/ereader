@@ -341,7 +341,8 @@ class Pack(object):
 # ------------------------------------------------------------------- builder
 
 class Builder(object):
-    def __init__(self, src):
+    def __init__(self, src, version="red"):
+        self.version = version
         self.src = src
         self.notes = []
 
@@ -1068,8 +1069,25 @@ class Builder(object):
             grass = []
             water = []
             mode = None
+            # Version-split tables: `IF DEF(_RED)` ... `ENDC` and the Blue
+            # twin. Only the block for the version being packed is read;
+            # lines outside any block (the shared Pikachu slots in Viridian
+            # Forest, say) always are. 34 maps split this way.
+            active = True
             for line in lines_of(os.path.join(d, fn)):
                 t = line.strip()
+                m = re.match(r"IF\s+DEF\((_\w+)\)", t)
+                if m:
+                    active = m.group(1).lower() == "_" + self.version
+                    continue
+                if t.startswith("ELSE"):
+                    active = not active
+                    continue
+                if t.startswith("ENDC"):
+                    active = True
+                    continue
+                if not active:
+                    continue
                 m = re.match(r"(\w+):$", t)
                 if m:
                     label = m.group(1)
@@ -1392,6 +1410,8 @@ def main():
     ap.add_argument("--src", default=os.path.join(here, "third_party/pokered"))
     ap.add_argument("--out", default=os.path.join(here, "build_pack"))
     ap.add_argument("--no-preview", action="store_true")
+    ap.add_argument("--version", choices=["red", "blue"], default="red",
+                    help="which version's encounter tables to pack (default red)")
     args = ap.parse_args()
 
     if not os.path.isdir(args.src):
@@ -1399,7 +1419,7 @@ def main():
     if not HAVE_PIL:
         print("Pillow not found, using the built in PNG reader")
 
-    builder = Builder(args.src)
+    builder = Builder(args.src, args.version)
     pack = builder.build()
     blob = pack.build()
 
