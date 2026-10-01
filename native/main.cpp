@@ -11,6 +11,7 @@
 #include <LittleFS.h>
 #include "config.h"
 #include "pack.h"
+#include "pokemon_achievements.h"
 #include "pokemon_state.h"
 #include "pokemon_views.h"
 #include "gbgfx.h"
@@ -85,6 +86,28 @@ static void decodeJson() {
       printf(",\"enemy\":{\"nick\":%s,\"species\":%u,\"level\":%u,\"hp\":%u,\"maxHp\":%u}", jsonStr(String(e.nick)).c_str(),
              e.species, e.level, e.hp, e.maxHp);
   }
+  // Achievements: judged now (and stamped, like a draw would).
+  achievements::update();
+  int next = achievements::nextStory();
+  int toast = achievements::toast();
+  printf(",\"achievements\":{\"earned\":%d,\"total\":%d,", achievements::earnedCount(),
+         achievements::count());
+  printf("\"toast\":%s,", toast >= 0 ? jsonStr(String(achievements::def(toast).title)).c_str() : "null");
+  if (next >= 0) {
+    printf("\"next\":{\"title\":%s,\"hint\":%s},", jsonStr(String(achievements::def(next).title)).c_str(),
+           jsonStr(String(achievements::def(next).hint)).c_str());
+  } else {
+    printf("\"next\":null,");
+  }
+  printf("\"list\":[");
+  for (int i = 0; i < achievements::count(); i++) {
+    const achievements::Def &d = achievements::def(i);
+    uint16_t at = achievements::earnedAtMinutes(i);
+    printf("%s{\"title\":%s,\"story\":%s,\"earned\":%s,\"atMinutes\":%d}", i ? "," : "",
+           jsonStr(String(d.title)).c_str(), d.story ? "true" : "false",
+           achievements::earned(i) ? "true" : "false", at == 0xFFFF ? -1 : (int)at);
+  }
+  printf("]}");
   printf(",\"packSections\":%d}\n", pack::count());
 }
 
@@ -108,6 +131,7 @@ int main(int argc, char **argv) {
 
   LittleFS.setRoot(root);
   if (!pack::open()) fprintf(stderr, "pokeview: no pack at %s/%s (views fall back to NO PACK screen)\n", root.c_str(), GAMES_PACK_PATH);
+  achievements::load();
   if (!loadWram(wram.c_str())) return 1;
 
   if (decode) { decodeJson(); return 0; }

@@ -110,6 +110,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Companion e-in
  button:hover{background:#555}
  #s{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#bbb;max-width:680px;text-align:center;margin:0 16px 20px;white-space:pre-wrap}
  .warn{color:#f6c343}
+ #toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);background:#f6c343;color:#222;font-weight:600;padding:10px 18px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.5);opacity:0;transition:opacity .3s;pointer-events:none}
+ #toast.show{opacity:1}
 </style></head><body>
 <div class="bar">
  <button onclick="pad('up')">▲ UP · next page</button>
@@ -117,10 +119,13 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Companion e-in
  <button onclick="pad('left')">◀ LEFT · terrain</button>
  <button onclick="toggleSize()">1:1 / fit</button>
 </div>
+<div id="toast"></div>
 <div class="panel"><img id="f" src="/frame.png" alt="companion frame"></div>
 <div id="s">connecting…</div>
 <script>
-const img=document.getElementById('f'),s=document.getElementById('s');
+const img=document.getElementById('f'),s=document.getElementById('s'),toast=document.getElementById('toast');
+let lastToast=null,toastTimer=null;
+function showToast(t){if(!t||t===lastToast)return;lastToast=t;toast.textContent='Achievement: '+t;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),8000)}
 function pad(d){fetch('/pad?dir='+d,{method:'POST'}).then(tick)}
 function toggleSize(){img.classList.toggle('big')}
 document.addEventListener('keydown',e=>{const m={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left'};if(m[e.key]){e.preventDefault();pad(m[e.key])}});

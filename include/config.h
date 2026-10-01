@@ -184,6 +184,10 @@ static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 // file picker like a ROM.
 #define GAMES_AUX_DIR "/games/aux"
 #define GAMES_PACK_PATH GAMES_AUX_DIR "/pokered.pack"
+// Companion achievements: when each was first earned (src/pokemon_achievements.*).
+#define GAMES_ACHIEVEMENTS_PATH GAMES_AUX_DIR "/achievements.bin"
+// How long a newly earned achievement stays as a banner, in play time seconds.
+static const uint32_t ACHIEVEMENT_TOAST_SEC = 12;
 #define GAMES_AP_SSID "ereader-games"
 #define GAMES_AP_PASSWORD "ereader1"
 #define GAMES_AP_IP_TEXT "192.168.4.1"

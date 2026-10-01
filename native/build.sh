@@ -7,6 +7,7 @@ c++ -std=c++17 -O2 -Wall -Wno-unused-function \
   -I shim -I "$E/include" -I "$E/src" \
   main.cpp ui_native.cpp \
   "$E/src/pokemon_state.cpp" "$E/src/gbgfx.cpp" "$E/src/pokemon_views.cpp" "$E/src/pack.cpp" \
+  "$E/src/pokemon_achievements.cpp" \
   -o pokeview
 # The firmware reads the pack at /games/aux/pokered.pack; the stub server's
 # root keeps it at aux/pokered.pack. One symlink lets both read the same file.

@@ -16,6 +16,7 @@
 #include "net.h"
 #include "news_sync.h"
 #include "pack.h"
+#include "pokemon_achievements.h"
 #include "pokemon_state.h"
 #include "pokemon_views.h"
 #include "ui.h"
@@ -997,6 +998,7 @@ void run() {
   pokemon_views::reset();
   pokemon::wramInvalidate();
   pack::open();   // stays open for the life of the server
+  achievements::load();
 
   WiFi.persistent(false);
   if (!wifi_store::list().empty()) {

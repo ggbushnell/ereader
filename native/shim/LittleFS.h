@@ -3,6 +3,7 @@
 #pragma once
 #include "FS.h"
 #include <sys/stat.h>
+#include <errno.h>
 
 class LittleFSShim {
  public:
@@ -12,6 +13,7 @@ class LittleFSShim {
     if (!p.empty() && p[0] == '/') return root_ + p;
     return root_ + "/" + p;
   }
+  bool mkdir(const char *path) const { return ::mkdir(resolve(path).c_str(), 0755) == 0 || errno == EEXIST; }
   bool exists(const char *path) const {
     struct stat st;
     return ::stat(resolve(path).c_str(), &st) == 0;

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "gbgfx.h"
 #include "pack.h"
+#include "pokemon_achievements.h"
 #include "pokemon_state.h"
 #include "ui.h"
 
@@ -658,7 +659,7 @@ void viewHome() {
   drawTrainerCards();
   drawPartyBox();
   drawBadgeBox();
-  drawHint("R:INVENTORY  L:BACK  U:TERRAIN  C:EXIT");
+  drawHint("R:INVENTORY  L:AWARDS  U:TERRAIN  C:EXIT");
 }
 
 // -------------------------------------------------------- view: inventory
@@ -747,7 +748,7 @@ void viewInventory() {
     gbgfx::printGb(x + 16, 856, rjust(pokemon::boxMonLevel(9), 3), 2, false);
   }
 
-  drawHint("R:HOME  L:BACK  U:TERRAIN  C:EXIT");
+  drawHint("R:AWARDS  L:HOME  U:TERRAIN  C:EXIT");
 }
 
 // ---------------------------------------------------------- view: terrain
@@ -1380,7 +1381,90 @@ void viewNoPack() {
 
 // ------------------------------------------------------------------ picker
 
-enum class View : uint8_t { NONE, HOME, INVENTORY, TERRAIN, BATTLE, NO_PACK };
+// ----------------------------------------------------------- view: awards
+//
+// Achievements, judged from work RAM by src/pokemon_achievements.*. Left box:
+// the story in order, the first unearned one inverted as the next thing to
+// do. Right box: milestones. Bottom box: that next step's hint. Each row is
+// a mark, a 13 cell title and the play time it was earned at.
+
+String stampText(uint16_t minutes) {
+  if (minutes == 0xFFFF) return String("     ");
+  char buf[8];
+  unsigned h = minutes / 60, m = minutes % 60;
+  if (h > 99) h = 99;
+  snprintf(buf, sizeof(buf), "%2u:%02u", h, m);
+  return String(buf);
+}
+
+void drawAwardRow(int x, int y, int index, bool isNext) {
+  bool got = achievements::earned(index);
+  const achievements::Def &d = achievements::def(index);
+  if (got) drawDexMark(x, y, true, true);
+  gbgfx::printGb(x + 16, y, ljust(d.title, 13), 2, isNext);
+  gbgfx::printGb(x + 16 + 13 * 16, y, stampText(achievements::earnedAtMinutes(index)), 2,
+                 false);
+}
+
+void viewAwards() {
+  drawTopBar("AWARDS");
+  int total = achievements::count();
+  int got = achievements::earnedCount();
+  int next = achievements::nextStory();
+
+  // Two 21 tile columns on a 24 px row pitch: header row, then one row per
+  // entry. The story column sets the height; milestones fill the right one.
+  const int PITCH = 24;
+  int storyN = achievements::storyCount();
+  int boxTiles = (16 + PITCH * (storyN + 1) + 8 + 15) / 16;   // header + rows + pad
+  gbgfx::drawBox(4, 32, 21, boxTiles, 2);
+  gbgfx::printGb(20, 48, "STORY", 2, false);
+  gbgfx::printGb(20 + 13 * 16, 48, rjust(got, 2) + "/" + rjust(total, 2), 2, false);
+  int y = 48 + PITCH;
+  for (int i = 0; i < total; i++) {
+    if (!achievements::def(i).story) continue;
+    drawAwardRow(20, y, i, i == next);
+    y += PITCH;
+  }
+
+  gbgfx::drawBox(340, 32, 21, boxTiles, 2);
+  gbgfx::printGb(356, 48, "MILESTONES", 2, false);
+  y = 48 + PITCH;
+  for (int i = 0; i < total; i++) {
+    if (achievements::def(i).story) continue;
+    if (y + 16 > 32 + 16 * boxTiles - 16) break;
+    drawAwardRow(356, y, i, false);
+    y += PITCH;
+  }
+
+  // Next step.
+  int boxY = 32 + 16 * boxTiles + 16;
+  gbgfx::drawBox(4, boxY, 42, 5, 2);
+  if (next >= 0) {
+    const achievements::Def &d = achievements::def(next);
+    gbgfx::printGb(20, boxY + 16, "NEXT  " + String(d.title), 2, false);
+    gbgfx::printGb(20, boxY + 40, d.hint, 2, false);
+  } else {
+    gbgfx::printGb(20, boxY + 16, "NEXT  NOTHING LEFT. WELL DONE", 2, false);
+  }
+
+  drawHint("R:HOME  L:INVENTORY  U:TERRAIN  C:EXIT");
+}
+
+// While a freshly earned achievement is current, the hint strip at the bottom
+// carries it instead of the pad hints: nothing of the view is covered.
+void drawToast() {
+  int i = achievements::toast();
+  if (i < 0) return;
+  Adafruit_GFX &g = ui::gfx();
+  g.fillRect(0, HINT_Y, SCREEN_W, SCREEN_H - HINT_Y, ui::INK_WHITE);
+  g.fillRect(0, HINT_Y, SCREEN_W, 2, ui::INK_BLACK);
+  String text = "NEW ACHIEVEMENT  " + String(achievements::def(i).title);
+  int w = gbgfx::textWidthGb(text, 2);
+  gbgfx::printGb((SCREEN_W - w) / 2, HINT_TEXT_Y, text, 2, false);
+}
+
+enum class View : uint8_t { NONE, HOME, INVENTORY, AWARDS, TERRAIN, BATTLE, NO_PACK };
 
 View lastView = View::NONE;
 uint32_t lastFullMs = 0;
@@ -1391,7 +1475,11 @@ View pickView(int page, bool terrain) {
   // comes back by itself when the fight ends.
   if (pokemon::inBattle()) return View::BATTLE;
   if (terrain) return View::TERRAIN;
-  return (page % pokemon_views::PAGE_COUNT) ? View::INVENTORY : View::HOME;
+  switch (page % pokemon_views::PAGE_COUNT) {
+    case 1: return View::INVENTORY;
+    case 2: return View::AWARDS;
+    default: return View::HOME;
+  }
 }
 
 }  // namespace
@@ -1399,6 +1487,7 @@ View pickView(int page, bool terrain) {
 namespace pokemon_views {
 
 void reset() {
+  achievements::reset();
   battleTried = battleOk = false;
   chartTried = false;
   typeChartRecs = 0;
@@ -1423,13 +1512,16 @@ void draw(int page, bool terrain) {
   do {
     uint32_t t0 = millis();
     ui::gfx().fillScreen(ui::INK_WHITE);
+    achievements::update();
     switch (v) {
       case View::HOME: viewHome(); break;
       case View::INVENTORY: viewInventory(); break;
+      case View::AWARDS: viewAwards(); break;
       case View::TERRAIN: viewTerrain(); break;
       case View::BATTLE: viewBattle(); break;
       default: viewNoPack(); break;
     }
+    if (v != View::NO_PACK) drawToast();
     uint32_t t1 = millis();
     renderMs += t1 - t0;
     bool more = ui::frameNext();

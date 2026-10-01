@@ -51,6 +51,8 @@ const uint16_t W_BOX_ITEMS = 0xD53B;
 const uint16_t W_TOGGLEABLE_OBJECT_FLAGS = 0xD5A6;
 const uint16_t W_HIDDEN_ITEM_FLAGS = 0xD6F0;
 const uint16_t W_TOWN_VISITED_FLAGS = 0xD70B;   // flag_array NUM_CITY_MAPS
+const uint16_t W_EVENT_FLAGS = 0xD747;           // flag_array NUM_EVENTS (320 bytes)
+const int EVENT_FLAG_BYTES = 320;
 const uint16_t W_ENEMY_PARTY_COUNT = 0xD89C;
 const uint16_t W_ENEMY_MONS = 0xD8A4;
 const uint16_t W_DAY_CARE_MON_NAME = 0xDA49;
@@ -485,6 +487,11 @@ bool townVisited(uint8_t cityMap) {
   return (rd(W_TOWN_VISITED_FLAGS + (uint16_t)(cityMap >> 3)) >> (cityMap & 7)) & 1;
 }
 
+bool eventFlag(uint16_t event) {
+  if (event >= EVENT_FLAG_BYTES * 8) return false;
+  return (rd(W_EVENT_FLAGS + (uint16_t)(event >> 3)) >> (event & 7)) & 1;
+}
+
 }  // namespace pokemon
 
 namespace pokemon {
@@ -495,6 +502,8 @@ uint32_t viewSignature() {
       {0xD057, 0xD05A},  // in battle, opponent
       {0xD158, 0xD370},  // names, party, dex, bag, money, badges, map, coords
       {0xD53A, 0xD5A8},  // PC items, box number, coins
+      {0xD70B, 0xD70D},  // towns visited
+      {0xD747, 0xD887},  // event flags (story progress, achievements)
       {0xDA41, 0xDA44},  // play time hours and minutes (seconds excluded)
       {0xDA48, 0xDA81},  // day care, box count
   };

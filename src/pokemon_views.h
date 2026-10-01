@@ -19,11 +19,12 @@
 //   terrain   silk up, over whichever page is current
 //   home      page 0
 //   inventory page 1
+//   awards    page 2 (achievements and what to do next)
 
 namespace pokemon_views {
 
 // Pages the silk right / silk left pads cycle through, wrapping.
-static const int PAGE_COUNT = 2;
+static const int PAGE_COUNT = 3;
 
 // Draws one frame. Picks a full refresh when the view changed since the last
 // call and a partial one when the same view is redrawing with new data, then

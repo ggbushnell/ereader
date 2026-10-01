@@ -183,4 +183,8 @@ bool hiddenItemTaken(uint8_t index);
 // the first time the player walks into that town.
 bool townVisited(uint8_t cityMap);
 
+// One of pokered's wEventFlags (story progress): bit `event` as numbered by
+// constants/event_constants.asm. False past the array.
+bool eventFlag(uint16_t event);
+
 }  // namespace pokemon
