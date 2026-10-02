@@ -75,7 +75,12 @@ class Sync:
     # ---- helpers
     def _ssh(self, cmd, data=None, timeout=20):
         if self.password is None:
-            return subprocess.run(SSH + [self.user + "@" + self.host, cmd], input=data, capture_output=True, timeout=timeout)
+            try:
+                return subprocess.run(SSH + [self.user + "@" + self.host, cmd], input=data, capture_output=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                class R: pass
+                res = R(); res.returncode = 1; res.stdout = b""; res.stderr = b"ssh timed out"
+                return res
         # Password path: stdin data travels inside the command as base64 (the
         # saves are 32 KB, well inside a remote command line); the remote
         # output is captured after the password exchange. Braces are stripped
@@ -102,7 +107,12 @@ class Sync:
             "expect eof",
             "",
         ])
-        r = subprocess.run(["expect", "-"], input=script.encode(), capture_output=True, timeout=timeout + 10)
+        try:
+            r = subprocess.run(["expect", "-"], input=script.encode(), capture_output=True, timeout=timeout + 10)
+        except subprocess.TimeoutExpired:
+            class R: pass
+            res = R(); res.returncode = 1; res.stdout = b""; res.stderr = b"ssh timed out (device asleep or SSH off?)"
+            return res
         out = r.stdout
         if b"password:" in out:
             out = out.split(b"password:", 1)[1].lstrip(b" \r\n")
