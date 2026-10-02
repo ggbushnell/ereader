@@ -258,12 +258,17 @@ class Sync:
             return False
         # The resume state RetroArch auto-loads on launch would override the
         # pushed save. It sits next to the .srm on Batocera but in a parallel
-        # states/ tree on OnionOS (savestate_directory), so clear both spellings.
-        state_dirbase = shq(os.path.splitext(self.pi_srm.replace("/saves/", "/states/"))[0])
-        cmd = ("([ -e %s ] && cp %s %s.replaced-%s; true) && mv %s.tmp %s && "
-               "for b in %s %s; do for f in $b.state.auto $b.state.auto.png; do "
-               "[ -e \"$f\" ] && mv \"$f\" \"$f.stale-%s\"; done; done; "
-               "[ -s %s ] && echo PUSH_OK") % (srm, srm, srm, st, srm, srm, base, state_dirbase, st, srm)
+        # states/ tree on OnionOS (savestate_directory). Build one fully quoted
+        # mv per file: ROM names contain spaces, so an unquoted shell loop
+        # variable would word-split the path and silently clear nothing.
+        base_plain = os.path.splitext(self.pi_srm)[0]
+        states_plain = os.path.splitext(self.pi_srm.replace("/saves/", "/states/"))[0]
+        resume_files = [b + suffix for b in (base_plain, states_plain)
+                        for suffix in (".state.auto", ".state.auto.png")]
+        clears = "; ".join("[ -e %s ] && mv %s %s.stale-%s" % (shq(f), shq(f), shq(f), st)
+                           for f in resume_files)
+        cmd = ("([ -e %s ] && cp %s %s.replaced-%s; true) && mv %s.tmp %s; %s; "
+               "[ -s %s ] && echo PUSH_OK") % (srm, srm, srm, st, srm, srm, clears, srm)
         r = self._ssh(cmd)
         if b"PUSH_OK" not in r.stdout:
             log("push to the device failed: " + (r.stdout + r.stderr).decode(errors="replace")[-200:])
