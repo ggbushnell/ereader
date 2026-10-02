@@ -256,9 +256,14 @@ class Sync:
         if not ok:
             log("push to the device failed (scp)")
             return False
+        # The resume state RetroArch auto-loads on launch would override the
+        # pushed save. It sits next to the .srm on Batocera but in a parallel
+        # states/ tree on OnionOS (savestate_directory), so clear both spellings.
+        state_dirbase = shq(os.path.splitext(self.pi_srm.replace("/saves/", "/states/"))[0])
         cmd = ("([ -e %s ] && cp %s %s.replaced-%s; true) && mv %s.tmp %s && "
-               "for f in %s.state.auto %s.state.auto.png; do [ -e \"$f\" ] && mv \"$f\" \"$f.stale-%s\"; done; "
-               "[ -s %s ] && echo PUSH_OK") % (srm, srm, srm, st, srm, srm, base, base, st, srm)
+               "for b in %s %s; do for f in $b.state.auto $b.state.auto.png; do "
+               "[ -e \"$f\" ] && mv \"$f\" \"$f.stale-%s\"; done; done; "
+               "[ -s %s ] && echo PUSH_OK") % (srm, srm, srm, st, srm, srm, base, state_dirbase, st, srm)
         r = self._ssh(cmd)
         if b"PUSH_OK" not in r.stdout:
             log("push to the device failed: " + (r.stdout + r.stderr).decode(errors="replace")[-200:])
