@@ -16,6 +16,7 @@ like the browser page does. Nothing downstream can tell the difference.
     python3 retroarch_wram_poller.py --host batocera.local [--port 55355]
                                      [--stub http://localhost:8080] [--chunk 1024]
                                      [--sync-web <stub root>/saves/pokemon_red.gb]
+                                     [--user onion --pi-srm "/mnt/SDCARD/Saves/CurrentProfile/saves/Gambatte/<rom>.srm"]
 
 With --sync-web the battery save is kept in step as well (save_sync.py): when
 the Pi's game stops, its save is pulled to the web side if it is ahead; while
@@ -52,14 +53,36 @@ def read_memory(sock, addr, n, timeout=1.0):
     return bytes(int(x, 16) for x in data[2:])
 
 
-def read_wram(sock, chunk):
-    out = bytearray()
+def read_wram(sock, chunk, timeout=2.5):
+    """All chunks requested at once, replies matched by address: one round trip
+    per snapshot even on a slow Wi-Fi handheld. Some RetroArch builds cap a
+    reply at a few hundred bytes (OnionOS 1.15: ~330), so --chunk 256 is safe
+    everywhere; a bigger chunk is only faster where it is honoured."""
+    want = {}
     for off in range(0, WRAM_BYTES, chunk):
-        part = read_memory(sock, WRAM_BASE + off, min(chunk, WRAM_BYTES - off))
-        if len(part) != min(chunk, WRAM_BYTES - off):
-            raise RuntimeError("short read at %x: %d bytes" % (WRAM_BASE + off, len(part)))
-        out += part
-    return bytes(out)
+        n = min(chunk, WRAM_BYTES - off)
+        want[WRAM_BASE + off] = n
+        sock.send(f"READ_CORE_MEMORY {WRAM_BASE + off:x} {n}".encode())
+    got = {}
+    deadline = time.time() + timeout
+    while len(got) < len(want):
+        left = deadline - time.time()
+        if left <= 0:
+            raise RuntimeError("timed out with %d of %d chunks" % (len(got), len(want)))
+        sock.settimeout(left)
+        data = sock.recv(65535).decode("ascii", "replace").split()
+        if len(data) < 3 or data[0] != "READ_CORE_MEMORY":
+            continue
+        addr = int(data[1], 16)
+        if addr not in want:
+            continue
+        if data[2] == "-1":
+            raise RuntimeError("core reports no memory at %x (no memory map? wrong core?)" % addr)
+        part = bytes(int(x, 16) for x in data[2:])
+        if len(part) != want[addr]:
+            raise RuntimeError("short read at %x: %d of %d bytes (lower --chunk)" % (addr, len(part), want[addr]))
+        got[addr] = part
+    return b"".join(got[a] for a in sorted(got))
 
 
 def post_wram(stub, wram):
@@ -74,12 +97,15 @@ def main():
     ap.add_argument("--host", required=True)
     ap.add_argument("--port", type=int, default=55355)
     ap.add_argument("--stub", default="http://localhost:8080")
-    ap.add_argument("--chunk", type=int, default=1024)
+    ap.add_argument("--chunk", type=int, default=256)
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--sync-web", default=None, help="stub save base path to keep in step with the Pi's .srm")
-    ap.add_argument("--pi-srm", default="/userdata/saves/gb/pokemon_red.srm")
+    ap.add_argument("--pi-srm", default="/userdata/saves/gb/pokemon_red.srm", help="the device's .srm path")
+    ap.add_argument("--user", default="root", help="ssh user on the device (Batocera root, Onion onion)")
+    ap.add_argument("--password-env", default=None, help="env var with the ssh password, for a device that cannot take a key")
     a = ap.parse_args()
-    sync = Sync(a.host, a.sync_web, a.pi_srm) if (a.sync_web and Sync) else None
+    pw = os.environ.get(a.password_env) if a.password_env else None
+    sync = Sync(a.host, a.sync_web, a.pi_srm, a.user, pw) if (a.sync_web and Sync) else None
     if a.sync_web and not Sync:
         print("save_sync.py not found next to this script; running without save sync", flush=True)
 
