@@ -21,7 +21,7 @@ just finished running. The loser is kept as <file>.replaced-<stamp>.
 
     save_sync.py status|pull|push --host batocera.local --web <stub root>/saves/pokemon_red.gb
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, time
+import argparse, hashlib, json, os, shutil, struct, subprocess, sys, time
 
 PI_SRM_DEFAULT = "/userdata/saves/gb/pokemon_red.srm"
 PLAYTIME_OFF = 0x2CED
@@ -70,7 +70,7 @@ class Sync:
         try:
             self.state = json.load(open(self.state_path))
         except Exception:
-            self.state = {"web": "", "pi": ""}
+            self.state = {"web": "", "pi": "", "ts": 0}
 
     # ---- helpers
     def _ssh(self, cmd, data=None, timeout=20):
@@ -84,22 +84,31 @@ class Sync:
         if data is not None:
             cmd = "echo %s | base64 -d | (%s)" % (base64.b64encode(data).decode(), cmd)
         cmd = cmd.replace("{", "").replace("}", "")
+        # Two-step expect (prompt, then password, then wait for eof): the
+        # single-pattern-list form intermittently closed the session on this
+        # device's dropbear without running the command.
         script = "\n".join([
             "set timeout %d" % timeout,
-            "log_user 0",
+            # log_user 1: the whole session goes to stdout. expect_out(buffer)
+            # alone is capped at match_max (2000 bytes), far too small for a
+            # 44 KB base64 read, and that cap is what made every read-back
+            # look like a different, invalid file.
+            "log_user 1",
             "spawn ssh -o StrictHostKeyChecking=accept-new -o PubkeyAuthentication=no %s@%s {%s}" % (self.user, self.host, cmd),
             "expect {",
-            "  -re {(?i)password:} { send \"%s\\r\"; exp_continue }" % self.password,
-            "  eof",
+            "  -re {(?i)password:} { send \"%s\\r\" }" % self.password,
+            "  eof { }",
             "}",
-            "puts -nonewline \"@@BEGIN@@\"",
-            "puts -nonewline $expect_out(buffer)",
+            "expect eof",
             "",
         ])
         r = subprocess.run(["expect", "-"], input=script.encode(), capture_output=True, timeout=timeout + 10)
-        out = r.stdout.split(b"@@BEGIN@@", 1)[-1]
+        out = r.stdout
         if b"password:" in out:
             out = out.split(b"password:", 1)[1].lstrip(b" \r\n")
+        else:
+            # no prompt (key accepted or none needed): drop the spawn echo line
+            out = out.split(b"\n", 1)[1] if b"\n" in out else out
         class R:
             pass
         res = R()
@@ -141,7 +150,34 @@ class Sync:
         return open(p, "rb").read() if os.path.exists(p) else None
 
     def _save_state(self):
+        self.state["ts"] = time.time()
         json.dump(self.state, open(self.state_path, "w"))
+
+    def _web_state_header_ms(self, ext):
+        """Epoch-ms authored time inside a web save-state container (ERSV), or
+        None when absent/unreadable. Used to tell a browser state that is newer
+        than the last sync (unsynced work) from a stale one."""
+        path = self.web_base + ext
+        try:
+            raw = open(path, "rb").read(32)
+            if raw[:4] != b"ERSV":
+                return None
+            return struct.unpack_from("<d", raw, 8)[0]
+        except Exception:
+            return None
+
+    def _newer_web_state(self):
+        """The newest web .auto/.state authored AFTER the last sync, or None.
+        Such a state is browser work the device never saw; a pull must not
+        retire it."""
+        cutoff = (self.state.get("ts", 0) or 0) * 1000.0
+        newest = None
+        for ext in (".auto", ".state"):
+            ms = self._web_state_header_ms(ext)
+            if ms is not None and ms > cutoff + 1000:   # 1s slack
+                if newest is None or ms > newest[1]:
+                    newest = (ext, ms)
+        return newest
 
     def _aside(self, path, why):
         if os.path.exists(path):
@@ -155,8 +191,15 @@ class Sync:
         if os.path.exists(p):
             shutil.copy2(p, p + ".replaced-" + stamp())
         open(p, "wb").write(sram)
+        # Retire only states authored at or before the last sync; a newer one
+        # is browser work and pull() has already refused to reach here with it.
+        cutoff = (self.state.get("ts", 0) or 0) * 1000.0
         for ext in (".auto", ".state"):
-            self._aside(self.web_base + ext, "stale")
+            ms = self._web_state_header_ms(ext)
+            if ms is None or ms <= cutoff + 1000:
+                self._aside(self.web_base + ext, "stale")
+            else:
+                log("kept newer web state %s (it is ahead of this save)" % ext)
         self.state["web"] = self.state["pi"] = sha(sram)
         self._save_state()
         log("installed Pi save on the web side (%s, play time %s)" % (why, fmt_pt(playtime(sram))))
@@ -176,9 +219,10 @@ class Sync:
             "log_user 0",
             "spawn sh -c %s" % ("{" + inner.replace("{", "").replace("}", "") + "}"),
             "expect {",
-            "  -re {(?i)password:} { send \"%s\\r\"; exp_continue }" % self.password,
-            "  eof",
+            "  -re {(?i)password:} { send \"%s\\r\" }" % self.password,
+            "  eof { }",
             "}",
+            "expect eof",
             "catch wait result",
             "exit [lindex $result 3]",
             "",
@@ -226,11 +270,19 @@ class Sync:
             return ("web", "Pi save empty or invalid") if valid(web) else (None, "neither side holds a valid save")
         if not valid(web):
             return "pi", "web save empty or invalid"
-        if pchg and not wchg:
-            return "pi", "only the Pi changed since the last sync"
-        if wchg and not pchg:
-            return "web", "only the web changed since the last sync"
         tw, tp = playtime(web), playtime(pi)
+        # A side that changed but now carries LESS play time than the other
+        # has usually been started over (a device wrote a fresh save on exit);
+        # the longer save must not be overwritten silently, so fall through to
+        # the play-time rule instead of "the changed side wins".
+        if pchg and not wchg:
+            if tp >= tw:
+                return "pi", "only the Pi changed since the last sync"
+            log("the device's save changed but is shorter (%s < %s); keeping the longer one" % (fmt_pt(tp), fmt_pt(tw)))
+        if wchg and not pchg:
+            if tw >= tp:
+                return "web", "only the web changed since the last sync"
+            log("the web save changed but is shorter (%s < %s); keeping the longer one" % (fmt_pt(tw), fmt_pt(tp)))
         if tp > tw:
             return "pi", "both changed; Pi play time %s > web %s" % (fmt_pt(tp), fmt_pt(tw))
         if tw > tp:
@@ -245,6 +297,14 @@ class Sync:
             return
         winner, why = self.decide(web, pi, just_ran="pi")
         if winner == "pi":
+            newer = self._newer_web_state()
+            if newer is not None:
+                import datetime
+                when = datetime.datetime.fromtimestamp(newer[1] / 1000).strftime("%H:%M:%S")
+                log("NOT pulling: the browser has a save state (%s, authored %s) newer than the last sync. "
+                    "That is unsynced work. Open it in the browser and SAVE in-game, or move it aside by hand, "
+                    "then sync again." % (newer[0], when))
+                return
             self.install_on_web(pi, why)
         elif winner == "web":
             log("web save is ahead (%s); push it before the next Pi session" % why)
