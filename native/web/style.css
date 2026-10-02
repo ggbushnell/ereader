@@ -21,7 +21,7 @@ main { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)
 #card-battle { grid-column: 1 / -1; }
 .row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
 .row:first-child { border-top: 0; }
-.sprite { width: 56px; height: 56px; image-rendering: pixelated; object-fit: contain; flex: none; }
+.sprite { width: 56px; height: 56px; image-rendering: pixelated; object-fit: contain; flex: none; background: #eef0e6; border-radius: 6px; padding: 2px; }
 .sprite.sm { width: 40px; height: 40px; }
 .name { font-weight: 600; min-width: 120px; max-width: 170px; }
 .name .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -50,7 +50,7 @@ main { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px rgba(192,57,43,.35);} 50% { box-shadow: 0 0 0 2px var(--card), 0 0 0 10px rgba(192,57,43,0);} }
 .battle { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .battle .side { display: flex; gap: 18px; }
-.battle .big { width: 112px; height: 112px; image-rendering: pixelated; object-fit: contain; flex: none; }
+.battle .big { width: 112px; height: 112px; image-rendering: pixelated; object-fit: contain; flex: none; background: #eef0e6; border-radius: 8px; padding: 4px; }
 .battle h3 { margin: 0 0 4px; font-size: 20px; display: flex; gap: 10px; align-items: baseline; }
 .battle h3 small { color: var(--muted); font-size: 14px; font-weight: 500; }
 .stats { display: grid; grid-template-columns: repeat(4, auto); gap: 2px 14px; font-variant-numeric: tabular-nums; font-size: 13px; margin-top: 6px; }
