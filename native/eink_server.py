@@ -58,19 +58,19 @@ def render(wram, page, terrain):
     with open(wram_path, "wb") as f:
         f.write(wram)
     t0 = time.time()
-    cmd = [POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--page", str(page), "--out", pgm_path]
+    cmd = [POKEVIEW, "--root", ARGS.root, "--game", ARGS.game, "--wram", wram_path, "--page", str(page), "--out", pgm_path]
     if terrain:
         cmd.append("--terrain")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         state["error"] = r.stderr[-300:]
         return
-    d = subprocess.run([POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--decode"], capture_output=True, text=True)
+    d = subprocess.run([POKEVIEW, "--root", ARGS.root, "--game", ARGS.game, "--wram", wram_path, "--decode"], capture_output=True, text=True)
     try:
         state["decode"] = json.loads(d.stdout)
     except Exception:
         state["decode"] = {}
-    vcmd = [POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--view-json", "--page", str(page)]
+    vcmd = [POKEVIEW, "--root", ARGS.root, "--game", ARGS.game, "--wram", wram_path, "--view-json", "--page", str(page)]
     if terrain:
         vcmd.append("--terrain")
     v = subprocess.run(vcmd, capture_output=True)
@@ -79,7 +79,7 @@ def render(wram, page, terrain):
         with frame_lock:
             view_json = v.stdout
     map_path = os.path.join(HERE, "out", "live-map.png")
-    mp = subprocess.run([POKEVIEW, "--root", ARGS.root, "--wram", wram_path, "--map-png", map_path], capture_output=True)
+    mp = subprocess.run([POKEVIEW, "--root", ARGS.root, "--game", ARGS.game, "--wram", wram_path, "--map-png", map_path], capture_output=True)
     if mp.returncode == 0 and os.path.exists(map_path):
         with open(map_path, "rb") as f:
             data = f.read()
@@ -266,6 +266,7 @@ def main():
     ap.add_argument("--port", type=int, default=8081)
     ap.add_argument("--root", default=os.path.join(HERE, "..", "stub_games"))
     ap.add_argument("--interval", type=float, default=1.0)
+    ap.add_argument("--game", default=os.environ.get("COMPANION_GAME", "gen1"), help="gen1 (Red/Blue) or gen2 (Gold/Silver)")
     ARGS = ap.parse_args()
     ARGS.root = os.path.abspath(ARGS.root)
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)

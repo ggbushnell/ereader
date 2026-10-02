@@ -32,7 +32,7 @@ String itemName(uint8_t id);
 uint16_t itemPrice(uint8_t id);
 String moveName(uint8_t id);
 bool moveData(uint8_t id, uint8_t out[4]); // type power accuracy pp
-String mapLabel(uint8_t map);
+String mapLabel(uint16_t map);
 String trainerClassName(uint8_t cls);
 const char *statusText(uint8_t status, bool fainted);   // "SLP" "PSN" "BRN" "FRZ" "PAR" "FNT" ""
 
@@ -40,12 +40,13 @@ const char *statusText(uint8_t status, bool fainted);   // "SLP" "PSN" "BRN" "FR
 int chartMul(uint8_t atk, uint8_t def);                     // x10
 int effPercent(uint8_t moveType, uint8_t d1, uint8_t d2);  // 0 25 50 100 200 400
 String effBadge(int percent);                               // "x2 " "1/2" "x0 " "1/4" "x4 " or ""
-// The game's fifteen real type ids (BIRD and the gaps skipped).
-extern const uint8_t TYPE_IDS[15];
+// The game's real type ids (BIRD and the gaps skipped): 15 in Gen 1, 17 in
+// Gen 2 (adds STEEL 9 and DARK 27). `n` receives the count.
+const uint8_t *typeIds(int &n);
 // Types that hit a (t1, t2) defender for more than, less than, or zero
 // damage. Each out array holds up to 15 ids; returns are counts.
 struct Matchups {
-  uint8_t weak[15], resist[15], immune[15];
+  uint8_t weak[17], resist[17], immune[17];
   int nWeak, nResist, nImmune;
 };
 Matchups matchups(uint8_t t1, uint8_t t2);
@@ -56,7 +57,7 @@ struct MapInfo {
   uint8_t w, h, tileset, border;
   bool ok;
 };
-MapInfo mapInfo(uint8_t map);
+MapInfo mapInfo(uint16_t map);
 
 // ---- wild encounters
 struct Encounter {
@@ -72,15 +73,16 @@ struct WildTable {
   Encounter grass[10], water[10];
   int nGrass, nWater;
 };
-WildTable wildTable(uint8_t map);
+WildTable wildTable(uint16_t map);
 
 // ---- pickups on a map (item balls and hidden items), with the taken flag
 struct MapItem {
   uint8_t x, y, item;
+  uint16_t flag;   // the flag index the pack gave (Gen 2: an event number)
   bool hidden;
   bool taken;
 };
-int collectItems(uint8_t map, MapItem *out, int cap);
+int collectItems(uint16_t map, MapItem *out, int cap);
 
 // ---- battle arithmetic
 enum class Ball : uint8_t { POKE, GREAT, ULTRA };

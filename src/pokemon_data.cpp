@@ -1,6 +1,7 @@
 #include "pokemon_data.h"
 
 #include "pack.h"
+#include "pokemon_state.h"
 
 namespace {
 
@@ -60,7 +61,7 @@ uint8_t dexOf(uint8_t internalIndex) {
 }
 
 String speciesNameByDex(uint8_t dex) {
-  if (!dex || dex > 151) return String();
+  if (!dex || dex > pokemon::speciesCount()) return String();
   return packString(S_SPECIES_NAMES, dex - 1, 12);
 }
 
@@ -69,12 +70,12 @@ String speciesName(uint8_t internalIndex) {
 }
 
 bool baseStats(uint8_t dex, uint8_t out[9]) {
-  if (!dex || dex > 151) return false;
+  if (!dex || dex > pokemon::speciesCount()) return false;
   return pack::read(S_BASE_STATS, (size_t)(dex - 1) * 9, out, 9) == 9;
 }
 
 uint8_t growthRate(uint8_t dex) {
-  if (!dex || dex > 151) return 0;
+  if (!dex || dex > pokemon::speciesCount()) return 0;
   uint8_t g = 0;
   if (pack::read(S_GROWTH, (size_t)dex - 1, &g, 1) != 1) return 0;
   return g;
@@ -108,7 +109,7 @@ bool moveData(uint8_t id, uint8_t out[4]) {
   return pack::read(S_MOVE_DATA, (size_t)(id - 1) * 4, out, 4) == 4;
 }
 
-String mapLabel(uint8_t map) { return packString(S_MAP_LABELS, map, 30); }
+String mapLabel(uint16_t map) { return packString(S_MAP_LABELS, map, 30); }
 
 String trainerClassName(uint8_t cls) {
   if (!cls) return String();
@@ -161,13 +162,22 @@ String effBadge(int percent) {
   }
 }
 
-const uint8_t TYPE_IDS[15] = {0, 1, 2, 3, 4, 5, 7, 8, 20, 21, 22, 23, 24, 25, 26};
+static const uint8_t TYPE_IDS_GEN1[15] = {0, 1, 2, 3, 4, 5, 7, 8, 20, 21, 22, 23, 24, 25, 26};
+static const uint8_t TYPE_IDS_GEN2[17] = {0, 1, 2, 3, 4, 5, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27};
+
+const uint8_t *typeIds(int &n) {
+  if (pokemon::game() == pokemon::Game::GEN2) { n = 17; return TYPE_IDS_GEN2; }
+  n = 15;
+  return TYPE_IDS_GEN1;
+}
 
 Matchups matchups(uint8_t t1, uint8_t t2) {
   Matchups m;
   m.nWeak = m.nResist = m.nImmune = 0;
-  for (int i = 0; i < 15; i++) {
-    uint8_t t = TYPE_IDS[i];
+  int nt = 0;
+  const uint8_t *ids = typeIds(nt);
+  for (int i = 0; i < nt; i++) {
+    uint8_t t = ids[i];
     int e = effPercent(t, t1, t2);
     if (e > 100) m.weak[m.nWeak++] = t;
     else if (e == 0) m.immune[m.nImmune++] = t;
@@ -178,7 +188,7 @@ Matchups matchups(uint8_t t1, uint8_t t2) {
 
 // ---- maps
 
-MapInfo mapInfo(uint8_t map) {
+MapInfo mapInfo(uint16_t map) {
   MapInfo mi;
   mi.ok = false;
   mi.offset = 0;
@@ -226,7 +236,7 @@ int mergeSlots(const uint8_t *slots, Encounter *out) {
   return n;
 }
 
-WildTable wildTable(uint8_t map) {
+WildTable wildTable(uint16_t map) {
   WildTable t;
   t.ok = false;
   t.grassRate = t.waterRate = 0;
@@ -243,7 +253,7 @@ WildTable wildTable(uint8_t map) {
 
 // ---- pickups
 
-int collectItems(uint8_t map, MapItem *out, int cap) {
+int collectItems(uint16_t map, MapItem *out, int cap) {
   int n = 0;
   uint8_t rec[5];
   size_t count = pack::size(S_ITEMS_PLACED) / 5;
@@ -254,6 +264,7 @@ int collectItems(uint8_t map, MapItem *out, int cap) {
     out[n].y = rec[2];
     out[n].item = rec[3];
     out[n].hidden = false;
+    out[n].flag = rec[4];
     out[n].taken = pokemon::objectTaken(rec[4]);
     n++;
   }
@@ -265,6 +276,7 @@ int collectItems(uint8_t map, MapItem *out, int cap) {
     out[n].y = rec[2];
     out[n].item = rec[3];
     out[n].hidden = true;
+    out[n].flag = rec[4];
     out[n].taken = pokemon::hiddenItemTaken(rec[4]);
     n++;
   }

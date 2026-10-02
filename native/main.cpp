@@ -6,6 +6,7 @@
 //   pokeview --root stub_games --wram wram.bin --view-json [--page N] [--terrain]   (every fact the views draw, as JSON)
 //   pokeview --root stub_games --dump-assets <dir>                 (the pack's graphics as coloured PNGs)
 //   pokeview --root stub_games --wram wram.bin --map-png out.png   (the terrain around the player, in colour)
+//   --game gen1|gen2   which game's work-RAM map to decode (default gen1; gen2 = Gold/Silver)
 //
 // The root is the stub server's --root (its "flash"); the pack is read from
 // <root>/games/aux/pokered.pack exactly where the firmware looks, so the stub
@@ -126,7 +127,7 @@ static void decodeJson() {
 }
 
 int main(int argc, char **argv) {
-  std::string root = ".", wram, out, allPrefix, assetsDir, mapPng;
+  std::string root = ".", wram, out, allPrefix, assetsDir, mapPng, game = "gen1";
   int page = 0;
   bool terrain = false, decode = false, viewJson = false;
   for (int i = 1; i < argc; i++) {
@@ -142,11 +143,13 @@ int main(int argc, char **argv) {
     else if (a == "--view-json") viewJson = true;
     else if (a == "--dump-assets") next(assetsDir);
     else if (a == "--map-png") next(mapPng);
+    else if (a == "--game") next(game);
     else { fprintf(stderr, "pokeview: unknown argument %s\n", a.c_str()); return 2; }
   }
   if (wram.empty() && assetsDir.empty()) { fprintf(stderr, "pokeview: --wram is required\n"); return 2; }
 
   LittleFS.setRoot(root);
+  pokemon::setGame(game == "gen2" ? pokemon::Game::GEN2 : pokemon::Game::GEN1);
   if (!pack::open()) fprintf(stderr, "pokeview: no pack at %s/%s (views fall back to NO PACK screen)\n", root.c_str(), GAMES_PACK_PATH);
   achievements::load();
   if (!assetsDir.empty()) return dumpAssets(assetsDir) > 0 ? 0 : 1;
