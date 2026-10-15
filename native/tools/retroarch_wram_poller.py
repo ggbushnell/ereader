@@ -104,6 +104,8 @@ def main():
     ap.add_argument("--user", default="root", help="ssh user on the device (Batocera root, Onion onion)")
     ap.add_argument("--password-env", default=None, help="env var with the ssh password, for a device that cannot take a key")
     a = ap.parse_args()
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    import netguard; netguard.require_not_umn("retroarch_wram_poller")   # never on a UMN network (ticket #779032)
     pw = os.environ.get(a.password_env) if a.password_env else None
     sync = Sync(a.host, a.sync_web, a.pi_srm, a.user, pw) if (a.sync_web and Sync) else None
     if a.sync_web and not Sync:

@@ -341,6 +341,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--root", default="./stub_games")
+    ap.add_argument("--bind", default="127.0.0.1",
+                    help="address to listen on; 0.0.0.0 exposes the page (and its upload/delete "
+                         "routes, no auth) to the whole LAN - start-stub.sh decides this via native/netguard.py")
     args = ap.parse_args()
 
     Handler.root = os.path.abspath(args.root)
@@ -349,8 +352,8 @@ def main():
     os.makedirs(os.path.join(Handler.root, "aux"), exist_ok=True)
     os.makedirs(os.path.join(Handler.root, "books"), exist_ok=True)
 
-    print("serving %s from %s on http://0.0.0.0:%d" % (WWW, Handler.root, args.port))
-    ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+    print("serving %s from %s on http://%s:%d" % (WWW, Handler.root, args.bind, args.port))
+    ThreadingHTTPServer((args.bind, args.port), Handler).serve_forever()
 
 
 if __name__ == "__main__":

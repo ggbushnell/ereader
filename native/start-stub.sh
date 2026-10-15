@@ -1,8 +1,12 @@
 #!/bin/sh
 # Laptop stand-in for the e-reader's games server (no hardware needed).
-# Page: http://localhost:8080/   Phone on the same Wi-Fi: http://<Mac IP>:8080/
+# Page: http://localhost:8080/
+# Phone: COMPANION_LAN=1 ./start-stub.sh  -> http://<Mac IP>:8080/  (home network ONLY;
+#        netguard.py refuses on any UMN network and ignores the flag elsewhere)
 # GAMES_ROOT holds roms/, saves/, aux/pokered.pack — never inside the repo.
 GAMES_ROOT="${GAMES_ROOT:-$HOME/Projects/wifi-ereader/stub_games}"
 cd "$(dirname "$0")/.." || exit 1
-echo "Mac LAN IP: $(ipconfig getifaddr en0 2>/dev/null || echo '?')"
-exec python3 tools/www_stub_server.py --port 8080 --root "$GAMES_ROOT"
+BIND=$(python3 native/netguard.py --bind) || exit 1
+echo "network: $(python3 native/netguard.py)  ->  binding $BIND"
+[ "$BIND" = "0.0.0.0" ] && echo "Mac LAN IP: $(ipconfig getifaddr en0 2>/dev/null || echo '?')"
+exec python3 tools/www_stub_server.py --port 8080 --root "$GAMES_ROOT" --bind "$BIND"

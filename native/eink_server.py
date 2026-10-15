@@ -267,6 +267,7 @@ def main():
     ap.add_argument("--root", default=os.path.join(HERE, "..", "stub_games"))
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--game", default=os.environ.get("COMPANION_GAME", "gen1"), help="gen1 (Red/Blue) or gen2 (Gold/Silver)")
+    ap.add_argument("--bind", default="127.0.0.1", help="0.0.0.0 exposes the companion to the LAN; start-eink.sh decides via netguard.py")
     ARGS = ap.parse_args()
     ARGS.root = os.path.abspath(ARGS.root)
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
@@ -276,9 +277,12 @@ def main():
         print("dumping the pack's graphics to", ASSETS_DIR, flush=True)
         subprocess.run([POKEVIEW, "--root", ARGS.root, "--dump-assets", ASSETS_DIR], capture_output=True)
     threading.Thread(target=poll_loop, daemon=True).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", ARGS.port), H)
-    ip = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True).stdout.strip() or "?"
-    print(f"companion e-ink page: http://localhost:{ARGS.port}/   (LAN: http://{ip}:{ARGS.port}/)", flush=True)
+    srv = ThreadingHTTPServer((ARGS.bind, ARGS.port), H)
+    lan = ""
+    if ARGS.bind == "0.0.0.0":
+        ip = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True).stdout.strip() or "?"
+        lan = f"   (LAN: http://{ip}:{ARGS.port}/)"
+    print(f"companion e-ink page: http://localhost:{ARGS.port}/{lan or '   (localhost only)'}", flush=True)
     print(f"browser companion:    http://localhost:{ARGS.port}/web/", flush=True)
     print(f"watching {ARGS.stub}/api/wram every {ARGS.interval}s", flush=True)
     srv.serve_forever()
