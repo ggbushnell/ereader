@@ -280,7 +280,8 @@ def main():
     srv = ThreadingHTTPServer((ARGS.bind, ARGS.port), H)
     lan = ""
     if ARGS.bind == "0.0.0.0":
-        ip = subprocess.run(["ipconfig", "getifaddr", "en0"], capture_output=True, text=True).stdout.strip() or "?"
+        sys.path.insert(0, HERE); import netguard
+        ip = netguard.current_ip() or "?"
         lan = f"   (LAN: http://{ip}:{ARGS.port}/)"
     print(f"companion e-ink page: http://localhost:{ARGS.port}/{lan or '   (localhost only)'}", flush=True)
     print(f"browser companion:    http://localhost:{ARGS.port}/web/", flush=True)

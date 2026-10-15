@@ -8,5 +8,4 @@ GAMES_ROOT="${GAMES_ROOT:-$HOME/Projects/wifi-ereader/stub_games}"
 cd "$(dirname "$0")/.." || exit 1
 BIND=$(python3 native/netguard.py --bind) || exit 1
 echo "network: $(python3 native/netguard.py)  ->  binding $BIND"
-[ "$BIND" = "0.0.0.0" ] && echo "Mac LAN IP: $(ipconfig getifaddr en0 2>/dev/null || echo '?')"
 exec python3 tools/www_stub_server.py --port 8080 --root "$GAMES_ROOT" --bind "$BIND"

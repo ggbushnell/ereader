@@ -37,16 +37,18 @@ def _run(cmd):
 
 
 def current_ip():
+    """IPv4 address of the default-route interface: macOS or Linux (incl. WSL2)."""
     fake = os.environ.get("NETGUARD_FAKE_IP")
     if fake:
         return fake
-    iface = ""
-    for line in _run(["route", "-n", "get", "default"]).splitlines():
-        if "interface:" in line:
-            iface = line.split(":", 1)[1].strip()
-    if not iface:
-        return ""
-    return _run(["ipconfig", "getifaddr", iface]).strip()
+    if sys.platform == "darwin":
+        iface = ""
+        for line in _run(["route", "-n", "get", "default"]).splitlines():
+            if "interface:" in line:
+                iface = line.split(":", 1)[1].strip()
+        return _run(["ipconfig", "getifaddr", iface]).strip() if iface else ""
+    words = _run(["ip", "-4", "route", "get", "1.1.1.1"]).split()
+    return words[words.index("src") + 1] if "src" in words else ""
 
 
 def classify(ip=None):
