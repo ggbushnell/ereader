@@ -55,12 +55,28 @@ jobs:
       - name: Parity test (native vs WebAssembly)
         run: node native/wasm/parity_test.mjs native/pokeview build_pack/pokered.pack
 
+      # The service worker ships pokeview-sw.wasm; the parity test ran
+      # pokeview.wasm. Same sources and flags apart from the JS glue, so the
+      # two should be the same program; say so if they ever are not.
+      - name: Check the shipped decoder is the tested one
+        run: |
+          cmp native/out/wasm/pokeview.wasm native/out/wasm/pokeview-sw.wasm \
+            && echo "pokeview-sw.wasm is byte-identical to the tested pokeview.wasm" \
+            || echo "::warning::pokeview-sw.wasm differs from the tested pokeview.wasm"
+          node --check allinone/sw.js
+
+      # The game page (www/) and the companion (native/web/) are copied
+      # unchanged; sw.js serves them and answers their server calls.
       - name: Assemble the site
         run: |
-          mkdir -p _site
+          mkdir -p _site/www/vendor _site/web
           sed "s/BUILD_SHA/${GITHUB_SHA::7}/" allinone/index.html > _site/index.html
-          cp native/out/wasm/pokeview.mjs native/out/wasm/pokeview.wasm _site/
-          ls -la _site
+          sed "s/BUILD_SHA/${GITHUB_SHA::7}/" allinone/sw.js > _site/sw.js
+          cp native/out/wasm/pokeview-sw.js native/out/wasm/pokeview-sw.wasm _site/
+          cp www/index.html www/app.js _site/www/
+          cp www/vendor/gb.js www/vendor/nes.js _site/www/vendor/
+          cp native/web/index.html native/web/app.js native/web/style.css _site/web/
+          find _site -type f | sort
 
       - uses: actions/upload-pages-artifact@v3
         with:
