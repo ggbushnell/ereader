@@ -36,13 +36,17 @@ jobs:
       - name: Asset pack (test only, never published)
         run: python3 tools/pokered_pack.py --src third_party/pokered --out build_pack --no-preview
 
+      # Compiler errors are re-posted as annotations so they can be read
+      # through the public API without logging in.
       - name: Native pokeview
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev
-          sh native/build.sh
+          sh native/build.sh > build.log 2>&1 || { grep -m 20 -E 'error|Error' build.log | sed 's/^/::error::/'; exit 1; }
 
       - name: WebAssembly pokeview
-        run: docker run --rm -v "$PWD":/src -w /src emscripten/emsdk:3.1.74 sh native/build_wasm.sh
+        run: |
+          docker run --rm -v "$PWD":/src -w /src emscripten/emsdk:3.1.74 sh native/build_wasm.sh > wasm.log 2>&1 \
+            || { grep -m 20 -E 'error|Error' wasm.log | sed 's/^/::error::/'; exit 1; }
 
       - uses: actions/setup-node@v4
         with:
