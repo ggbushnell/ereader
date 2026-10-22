@@ -1,0 +1,73 @@
+# One-tab browser companion: build the decoder to WebAssembly on GitHub's
+# machine, check it against the native build, publish the page to Pages.
+# Nothing here runs on the laptop; it only pushes.
+#
+# The asset pack is built from pret/pokered for the parity test only. It is
+# never published: the page asks for the user's own pack from disk.
+name: companion-web
+
+on:
+  push:
+    branches: [browser-allinone]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out pret/pokered (the commit the pack was built from locally)
+        uses: actions/checkout@v4
+        with:
+          repository: pret/pokered
+          ref: d2704a63c26f9ba046ade877445216b3de0519a4
+          path: third_party/pokered
+
+      - name: Asset pack (test only, never published)
+        run: python3 tools/pokered_pack.py --src third_party/pokered --out build_pack --no-preview
+
+      - name: Native pokeview
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev
+          sh native/build.sh
+
+      - name: WebAssembly pokeview
+        run: docker run --rm -v "$PWD":/src -w /src emscripten/emsdk:3.1.74 sh native/build_wasm.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Parity test (native vs WebAssembly)
+        run: node native/wasm/parity_test.mjs native/pokeview build_pack/pokered.pack
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          sed "s/BUILD_SHA/${GITHUB_SHA::7}/" allinone/index.html > _site/index.html
+          cp native/out/wasm/pokeview.mjs native/out/wasm/pokeview.wasm _site/
+          ls -la _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
