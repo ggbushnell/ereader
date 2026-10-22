@@ -104,6 +104,8 @@
   function renderBattle(d) {
     const c = $('#card-battle'), bt = d.battle;
     if (!bt.inBattle || !bt.enemy) { c.hidden = true; c.innerHTML = ''; return; }
+    // A battle just started: bring its card (always first) into view.
+    if (c.hidden) window.scrollTo({ top: 0, behavior: 'smooth' });
     const e = bt.enemy, m = bt.mine;
     const dvCell = (v) => `<span class="dv ${v >= 13 ? 'hi' : ''}">DV ${v}</span>`;
     const chips = (arr, cls) => arr.length ? arr.map((t) => `<span class="chip ${cls}">${esc(t)}</span>`).join('') : '<span class="chip muted">none</span>';
