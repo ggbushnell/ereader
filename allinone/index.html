@@ -141,22 +141,57 @@
     if (!f.hidden) { msg(''); showSaves().catch((e) => msg('Could not list saves: ' + e.message, true)); }
   };
 
+  // A running game owns its saves: it re-reads nothing and writes its own
+  // battery RAM back, so an import underneath it would be overwritten.
+  function gamePlaying() {
+    try { return $('game').contentDocument.body.classList.contains('playing'); } catch (e) { return false; }
+  }
+
   $('importFile').onchange = async () => {
     const files = [...$('importFile').files];
-    const keys = await req((await store('readonly')).getAllKeys());
-    const done = [], odd = [];
-    for (const f of files) {
-      if (!/\.(sav|state|auto)$/i.test(f.name)) continue;
-      const rom = f.name.replace(/\.(sav|state|auto)$/i, '');
-      await req((await store('readwrite')).put(new Uint8Array(await f.arrayBuffer()), 'saves/' + f.name));
-      done.push(f.name);
-      if (!keys.includes('roms/' + rom)) odd.push(f.name);
+    try {
+      if (gamePlaying()) {
+        msg('Leave the game first (← in the game bar), then import.', true);
+        return;
+      }
+      const keys = await req((await store('readonly')).getAllKeys());
+      const done = [], odd = [], moved = [];
+      for (const f of files) {
+        if (!/\.(sav|state|auto)$/i.test(f.name)) continue;
+        // Read the file before opening a transaction: IndexedDB commits a
+        // transaction that sits idle across an await, and the put then fails.
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const rom = f.name.replace(/\.(sav|state|auto)$/i, '');
+        // An imported in-game save means "this is my game": the browser's
+        // own save states for that ROM would override it on Continue, so
+        // move them aside (kept under saves-old/, never deleted).
+        if (/\.sav$/i.test(f.name)) {
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          for (const ext of ['.auto', '.state']) {
+            const k = 'saves/' + rom + ext;
+            if (!keys.includes(k)) continue;
+            const old = await req((await store('readonly')).get(k));
+            const st = await store('readwrite');
+            st.put(old, `saves-old/${rom}${ext}.${stamp}`);
+            await req(st.delete(k));
+            moved.push(rom + ext);
+          }
+        }
+        await req((await store('readwrite')).put(bytes, 'saves/' + f.name));
+        done.push(f.name);
+        if (!keys.includes('roms/' + rom)) odd.push(rom);
+      }
+      await showSaves();
+      if (!done.length) { msg('Nothing imported: pick .sav, .state or .auto files.', true); return; }
+      msg(`Imported ${done.join(', ')}.` +
+          (moved.length ? ` Moved the older ${moved.join(', ')} aside so Continue can't override it.` : '') +
+          (odd.length ? ` No ROM named ${odd.join(', ')} yet.` : ' Press Play, then CONTINUE in the game\'s menu.'),
+          odd.length > 0);
+    } catch (e) {
+      msg('Import failed: ' + (e && e.message || e), true);
+    } finally {
+      $('importFile').value = '';
     }
-    $('importFile').value = '';
-    await showSaves();
-    msg(done.length ? `Imported ${done.join(', ')}. Go back to the game list to use it.` +
-        (odd.length ? ` No ROM named ${odd.map((n) => n.replace(/\.(sav|state|auto)$/i, '')).join(', ')} yet.` : '')
-      : 'Nothing imported: pick .sav, .state or .auto files.', !done.length || odd.length > 0);
   };
 })();
 </script>
