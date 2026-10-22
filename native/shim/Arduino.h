@@ -1,6 +1,7 @@
 // Native stand-in for the Arduino core: just enough for src/pokemon_state.cpp,
 // src/gbgfx.cpp, src/pokemon_views.cpp and src/pack.cpp to compile on a Mac.
 #pragma once
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
