@@ -65,19 +65,37 @@ async function page(src, head) {
 
 // ---------------------------------------------------------------- pokeview
 
-let wasmBinary = null;
+// One module, reused: main is called again for every command, the way the
+// firmware runs the same code over and over in one long-lived program. (A
+// fresh instance per command reserved a new block of wasm memory each time;
+// at three commands a second Chrome ran out within minutes.) Inputs are
+// rewritten before every run; a crash, or every RECYCLE runs, starts over
+// with a new instance.
+const RECYCLE = 2000;
+let modP = null, runs = 0, sink = [];
 
-// One fresh module per command, exactly like the native companion runs one
-// process per command: no state carries over between runs except files.
+function mod() {
+  if (!modP) {
+    modP = (async () => {
+      const wasmBinary = new Uint8Array(await (await fetch(BASE + 'pokeview-sw.wasm')).arrayBuffer());
+      const M = await createPokeview({ wasmBinary, print: (s) => sink.push(s), printErr: (s) => console.log('pokeview:', s) });
+      M.FS.mkdirTree('/g/games/aux');
+      return M;
+    })();
+    modP.catch(() => { modP = null; });
+  }
+  return modP;
+}
+
 async function pokeview(args, files) {
-  if (!wasmBinary) wasmBinary = new Uint8Array(await (await fetch(BASE + 'pokeview-sw.wasm')).arrayBuffer());
-  const lines = [];
-  const M = await createPokeview({ wasmBinary, print: (s) => lines.push(s), printErr: (s) => console.log('pokeview:', s) });
-  M.FS.mkdirTree('/g/games/aux');
+  const M = await mod();
+  // Everything below is synchronous, so no other run can interleave.
   for (const [path, bytes] of Object.entries(files)) M.FS.writeFile(path, bytes);
+  sink = [];
   let rc;
-  try { rc = M.callMain(args); } catch (e) { console.log('pokeview crashed:', e); rc = -1; }
-  return { rc, out: lines.join('\n'), FS: M.FS };
+  try { rc = M.callMain(args); } catch (e) { console.log('pokeview crashed:', e); rc = -1; modP = null; }
+  if (++runs >= RECYCLE) { runs = 0; modP = null; }
+  return { rc, out: sink.join('\n'), FS: M.FS };
 }
 
 async function packFiles() {

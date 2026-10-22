@@ -58,14 +58,36 @@ async function runWasm(wram, game, args) {
   return { stdout: lines.join('\n').trim(), read: (f) => Buffer.from(mod.FS.readFile('/out/' + f)) };
 }
 
+// The service worker keeps one module and calls main again for every
+// command, so the same cases also run back to back on one shared instance.
+let shared = null, sharedLines = [];
+async function runShared(wram, game, args) {
+  if (!shared) {
+    shared = await createPokeview({ print: (s) => sharedLines.push(s), printErr: () => {} });
+    shared.FS.mkdirTree('/g/games/aux');
+    shared.FS.mkdirTree('/out');
+  }
+  const FS = shared.FS;
+  FS.writeFile('/g/games/aux/pokered.pack', pack);
+  // Each native run starts from a fresh root with no achievement stamps.
+  try { FS.unlink('/g/games/aux/achievements.bin'); } catch (e) { /* not there yet */ }
+  FS.writeFile('/snap.wram', wram);
+  sharedLines = [];
+  const a = args.map((s) => s.replace('OUT/', '/out/'));
+  const rc = shared.callMain(['--root', '/g', '--wram', '/snap.wram', '--game', game, ...a]);
+  if (rc) throw new Error(`shared wasm pokeview exited ${rc}`);
+  return { stdout: sharedLines.join('\n').trim(), read: (f) => Buffer.from(FS.readFile('/out/' + f)) };
+}
+
 let failures = 0, checks = 0;
+for (const run of [runWasm, runShared]) {
 for (const snap of snapshots) {
   for (const game of ['gen1', 'gen2']) {
     for (const c of CASES) {
-      const label = `${snap.name} ${game} ${c.args.join(' ')}`;
+      const label = `${run === runShared ? 'shared ' : ''}${snap.name} ${game} ${c.args.join(' ')}`;
       try {
         const n = runNative(snap.bytes, game, c.args);
-        const w = await runWasm(snap.bytes, game, c.args);
+        const w = await run(snap.bytes, game, c.args);
         checks++;
         if (n.stdout !== w.stdout) {
           failures++;
@@ -87,6 +109,7 @@ for (const snap of snapshots) {
       }
     }
   }
+}
 }
 console.log(`${checks - failures}/${checks} checks identical`);
 process.exit(failures ? 1 : 0);

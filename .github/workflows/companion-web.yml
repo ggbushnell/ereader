@@ -53,7 +53,11 @@ jobs:
           node-version: 20
 
       - name: Parity test (native vs WebAssembly)
-        run: node native/wasm/parity_test.mjs native/pokeview build_pack/pokered.pack
+        run: |
+          node native/wasm/parity_test.mjs native/pokeview build_pack/pokered.pack > parity.log 2>&1 \
+            && tail -1 parity.log \
+            || { grep -m 20 -E 'FAIL|Error' parity.log | sed 's/^/::error::/'; exit 1; }
+          echo "::notice::$(tail -1 parity.log)"
 
       # The service worker ships pokeview-sw.wasm; the parity test ran
       # pokeview.wasm. Same sources and flags apart from the JS glue, so the
